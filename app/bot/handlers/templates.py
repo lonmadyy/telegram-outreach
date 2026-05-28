@@ -82,13 +82,21 @@ async def on_template_name(message: Message, state: FSMContext) -> None:
     await state.update_data(name=name)
     await state.set_state(NewTemplate.waiting_body)
     await message.answer(
-        "Теперь отправьте тело шаблона.\n\n"
-        "Поддерживается:\n"
-        "• <b>Переменные</b>: <code>{first_name}</code>, <code>{username}</code>, "
-        "<code>{last_name}</code>, <code>{full_name}</code>\n"
-        "• <b>Spintax</b>: <code>{Привет|Здравствуй|Хей}</code> — случайный выбор\n"
-        "• <b>Экранирование</b>: <code>\\{ \\}</code> если нужны буквальные скобки\n\n"
-        "Лимит длины после рендера — 4096 символов.",
+        "Теперь пришлите <b>текст сообщения</b>, которое будут получать клиенты "
+        "при рассылке.\n\n"
+        "<b>Простой пример:</b>\n"
+        "<code>Привет, {first_name}! У нас новая акция со скидкой 25%.</code>\n\n"
+        "<b>Пример с рандомизацией</b> (рекомендую — снижает риск антиспам-фильтра):\n"
+        "<code>{Привет|Здравствуй|Хей}, {first_name}! "
+        "{Хотел рассказать|Думаю интересно} про новую акцию.</code>\n\n"
+        "<b>Что подставляется:</b>\n"
+        "• <code>{first_name}</code> — имя получателя из его профиля Telegram\n"
+        "• <code>{username}</code> — его @username\n"
+        "• <code>{last_name}</code>, <code>{full_name}</code> — фамилия / полное имя\n"
+        "• <code>{вариант1|вариант2|вариант3}</code> — случайный выбор для каждого сообщения\n"
+        "• <code>\\{ \\}</code> — если нужны буквальные фигурные скобки\n\n"
+        "После ввода я покажу 5 пробных рендеров для проверки.\n"
+        "Лимит — 4096 символов в каждом рендере.",
         reply_markup=cancel_kb(),
     )
 
