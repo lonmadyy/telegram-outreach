@@ -34,7 +34,8 @@ async def get_next_queued(
 ) -> Task | None:
     """Простой fetch одной задачи без блокировки.
 
-    Для MVP-2 (один воркер). В MVP-3 заменится на SKIP LOCKED-запрос из §6.2.
+    Оставлено для совместимости (используется MVP-2 одиночным воркером).
+    Многоаккаунтная работа должна использовать `claim_next_task`.
     """
     now = datetime.now(timezone.utc)
     stmt = (
@@ -47,6 +48,57 @@ async def get_next_queued(
     )
     result = await session.execute(stmt)
     return result.scalar_one_or_none()
+
+
+# Точный SQL из ARCHITECTURE.md §6.2. WITH ... FOR UPDATE SKIP LOCKED + UPDATE.
+# Гарантирует, что параллельные воркеры не возьмут одну и ту же задачу.
+_CLAIM_NEXT_TASK_SQL = text(
+    """
+    WITH next_task AS (
+        SELECT id FROM tasks
+        WHERE campaign_id IN (
+            SELECT id FROM campaigns WHERE status = 'running'
+        )
+          AND status = 'queued'
+          AND (locked_until IS NULL OR locked_until <= NOW())
+        ORDER BY id
+        LIMIT 1
+        FOR UPDATE SKIP LOCKED
+    )
+    UPDATE tasks t
+    SET status = 'in_progress',
+        assigned_account_id = :account_id,
+        attempts = attempts + 1,
+        last_attempt_at = NOW()
+    FROM next_task
+    WHERE t.id = next_task.id
+    RETURNING t.id, t.campaign_id, t.username
+    """
+)
+
+
+async def claim_next_task(
+    session: AsyncSession, *, account_id: int
+) -> dict | None:
+    """Атомарно захватывает следующую queued задачу любой running кампании.
+
+    ARCHITECTURE.md §6.2. Использует FOR UPDATE SKIP LOCKED — параллельные
+    воркеры конкурируют, но никогда не получат одну задачу.
+
+    Возвращает dict с минимальной нужной информацией (id, campaign_id, username)
+    или None если очередь пуста (или все задачи залочены другими воркерами).
+    """
+    result = await session.execute(
+        _CLAIM_NEXT_TASK_SQL, {"account_id": account_id}
+    )
+    row = result.fetchone()
+    if row is None:
+        return None
+    return {
+        "id": row.id,
+        "campaign_id": row.campaign_id,
+        "username": row.username,
+    }
 
 
 async def mark_in_progress(
