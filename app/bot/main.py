@@ -9,7 +9,9 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from loguru import logger
 
 from app.bot.handlers import accounts as accounts_handlers
+from app.bot.handlers import campaigns as campaigns_handlers
 from app.bot.handlers import common as common_handlers
+from app.bot.handlers import templates as templates_handlers
 from app.bot.middlewares import AuthMiddleware
 from app.config import settings
 
@@ -30,6 +32,8 @@ def build_dispatcher() -> Dispatcher:
 
     dp.include_router(common_handlers.router)
     dp.include_router(accounts_handlers.router)
+    dp.include_router(templates_handlers.router)
+    dp.include_router(campaigns_handlers.router)
 
     return dp
 

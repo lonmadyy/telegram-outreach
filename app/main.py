@@ -19,6 +19,7 @@ from alembic.config import Config
 from loguru import logger
 
 from app.bot.main import run_bot
+from app.campaigns.manager import resume_running_campaigns_at_startup
 from app.db.session import dispose_engine
 from app.utils.logging import setup_logging
 
@@ -34,6 +35,11 @@ def _run_migrations() -> None:
 
 async def _async_main() -> None:
     try:
+        # §9.3 + §18.4: recovery «зависших» задач и возобновление running кампаний.
+        resumed = await resume_running_campaigns_at_startup()
+        if resumed:
+            logger.info("Resumed {} running campaign(s)", resumed)
+
         await run_bot()
     finally:
         await dispose_engine()
