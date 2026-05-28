@@ -10,3 +10,17 @@ class AddAccount(StatesGroup):
     waiting_code = State()
     waiting_password = State()
     waiting_proxy = State()
+
+
+class NewTemplate(StatesGroup):
+    waiting_name = State()
+    waiting_body = State()
+    waiting_confirm = State()
+
+
+class NewCampaign(StatesGroup):
+    waiting_type = State()
+    waiting_txt = State()
+    waiting_resend_decision = State()
+    waiting_template = State()
+    waiting_confirm = State()
