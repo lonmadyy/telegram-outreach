@@ -56,11 +56,13 @@ class Settings(BaseSettings):
     @field_validator("allowed_user_ids", mode="before")
     @classmethod
     def _parse_user_ids(cls, v: object) -> list[int]:
+        if isinstance(v, int):
+            return [v]
         if isinstance(v, str):
             return [int(x.strip()) for x in v.split(",") if x.strip()]
         if isinstance(v, (list, tuple)):
             return [int(x) for x in v]
-        raise ValueError(f"ALLOWED_USER_IDS: ожидается строка или список, получено {type(v)}")
+        raise ValueError(f"ALLOWED_USER_IDS: ожидается строка/число/список, получено {type(v)}")
 
     @property
     def database_url(self) -> str:
