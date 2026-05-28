@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -13,15 +14,30 @@ from telethon import TelegramClient
 
 from app.config import settings
 
+_NON_DIGIT = re.compile(r"\D")
 
-def _normalize_phone(phone: str) -> str:
-    """`+79991234567` -> `79991234567`. Используется как имя session-файла."""
-    return phone.lstrip("+").strip()
+
+def normalize_phone(raw: str) -> str:
+    """`+7 (778) 878-66-14` -> `+77788786614`.
+
+    Убирает все нецифровые символы и принудительно добавляет `+` в начало.
+    Возвращает пустую строку, если цифр нет.
+    Должна давать строку, проходящую CHECK `^\\+?[0-9]{7,15}$` из §4.1.
+    """
+    digits = _NON_DIGIT.sub("", raw or "")
+    if not digits:
+        return ""
+    return "+" + digits
 
 
 def session_path_for(phone: str) -> str:
-    """Полный путь к session-файлу без `.session` (Telethon добавит сам)."""
-    return str(Path(settings.sessions_path) / _normalize_phone(phone))
+    """Полный путь к session-файлу без `.session` (Telethon добавит сам).
+
+    Имя файла = телефон без `+`, только цифры — чтобы избежать любых проблем
+    с экранированием в shell/file system.
+    """
+    digits = _NON_DIGIT.sub("", phone or "")
+    return str(Path(settings.sessions_path) / digits)
 
 
 def parse_proxy(proxy_url: str | None) -> dict | None:

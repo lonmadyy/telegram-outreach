@@ -27,7 +27,7 @@ from app.telegram.auth import (
     submit_code,
     submit_password,
 )
-from app.telegram.client_factory import parse_proxy, session_path_for
+from app.telegram.client_factory import normalize_phone, parse_proxy, session_path_for
 
 router = Router(name="accounts")
 
@@ -92,7 +92,13 @@ async def cmd_add_account(message: Message, state: FSMContext) -> None:
 async def on_phone(message: Message, state: FSMContext) -> None:
     if message.from_user is None or message.text is None:
         return
-    phone = message.text.strip()
+    phone = normalize_phone(message.text)
+    if not phone or len(phone) < 8:
+        await message.answer(
+            "Не похоже на телефонный номер. Введите в формате <code>+79991234567</code>.",
+            reply_markup=cancel_kb(),
+        )
+        return
     try:
         async with session_scope() as session:
             existing = await accounts_repo.get_by_phone(session, phone)

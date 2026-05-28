@@ -24,7 +24,7 @@ from telethon.errors import (
 )
 from telethon.tl.types import User
 
-from app.telegram.client_factory import create_client
+from app.telegram.client_factory import create_client, normalize_phone
 
 
 TIMEOUT_SECONDS = 10 * 60  # 10 минут на всю авторизацию
@@ -126,9 +126,11 @@ async def _safe_disconnect(client: TelegramClient) -> None:
 
 async def start_login(phone: str, proxy_url: str | None = None) -> AuthSession:
     """Запускает SMS/Telegram-код. Возвращает свежий AuthSession."""
-    phone = phone.strip()
-    if not phone.startswith("+"):
-        phone = "+" + phone
+    phone = normalize_phone(phone)
+    if not phone or len(phone) < 8:
+        raise InvalidPhoneError("Слишком короткий номер")
+    if len(phone) > 16:  # '+' + до 15 цифр (E.164)
+        raise InvalidPhoneError("Слишком длинный номер")
     client = create_client(phone=phone, proxy_url=proxy_url)
     try:
         await client.connect()
