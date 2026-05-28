@@ -318,6 +318,33 @@ class Task(Base):
     )
 
 
+class SpamCheckHistory(Base):
+    """ARCHITECTURE.md §4.7."""
+
+    __tablename__ = "spam_check_history"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    account_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey("accounts.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    checked_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    raw_response: Mapped[str] = mapped_column(Text, nullable=False)
+    parsed_status: Mapped[str] = mapped_column(String(32), nullable=False)
+    unlock_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    __table_args__ = (
+        Index(
+            "idx_spam_check_account_time",
+            "account_id",
+            "checked_at",
+        ),
+    )
+
+
 class ProcessedClient(Base):
     """ARCHITECTURE.md §4.6. Глобальный реестр обработанных клиентов между кампаниями."""
 
