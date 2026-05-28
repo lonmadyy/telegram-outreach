@@ -1,0 +1,44 @@
+# Secrets
+.env
+*.session
+*.session-journal
+
+# Data volumes
+data/sessions/*
+!data/sessions/.gitkeep
+data/logs/*
+!data/logs/.gitkeep
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+ENV/
+.eggs/
+*.egg-info/
+*.egg
+dist/
+build/
+
+# Tooling
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
