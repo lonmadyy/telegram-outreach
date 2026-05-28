@@ -14,13 +14,17 @@ from app.bot.handlers import common as common_handlers
 from app.bot.handlers import templates as templates_handlers
 from app.bot.middlewares import AuthMiddleware
 from app.config import settings
+from app.notifications.admin import set_bot as set_notification_bot
 
 
 def build_bot() -> Bot:
-    return Bot(
+    bot = Bot(
         token=settings.bot_token,
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
     )
+    # Дать другим модулям возможность отправлять уведомления через тот же инстанс.
+    set_notification_bot(bot)
+    return bot
 
 
 def build_dispatcher() -> Dispatcher:
