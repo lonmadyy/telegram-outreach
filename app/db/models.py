@@ -263,6 +263,8 @@ class Campaign(Base):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_by_user_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     notes: Mapped[str | None] = mapped_column(Text)
+    # Причина паузы (§5.3): 'global_flood' → авто-возобновление джобой. NULL = прочее.
+    paused_reason: Mapped[str | None] = mapped_column(String(32))
 
     __table_args__ = (
         Index(
@@ -367,3 +369,24 @@ class ProcessedClient(Base):
     )
 
     __table_args__ = (Index("idx_processed_last_at", "last_processed_at"),)
+
+
+class InvitedParticipant(Base):
+    """DB-снимок приглашённых НАМИ участников целевых чатов. §19 #11 (инкрементально).
+
+    Пишем только тех, кого пригласили мы — чтобы после рестарта не пытаться
+    пригласить повторно (двойной инвайт палит аккаунт). PK (chat_id, user_id).
+    """
+
+    __tablename__ = "invited_participants"
+
+    chat_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    campaign_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("campaigns.id", ondelete="SET NULL")
+    )
+    invited_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (Index("idx_invited_chat", "chat_id"),)

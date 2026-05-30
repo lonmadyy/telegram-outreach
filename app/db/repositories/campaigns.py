@@ -105,3 +105,57 @@ async def update_counts(
     await session.execute(
         update(Campaign).where(Campaign.id == campaign_id).values(**values)
     )
+
+
+async def pause_running_with_reason(
+    session: AsyncSession, *, reason: str
+) -> list[int]:
+    """Все running-кампании → paused с указанием причины (§5.3 глобальная пауза).
+
+    Возвращает id затронутых. Уже paused/cancelled/fatal-кампании не трогаются.
+    """
+    result = await session.execute(
+        select(Campaign.id).where(Campaign.status == CampaignStatus.running)
+    )
+    ids = [r[0] for r in result.all()]
+    if not ids:
+        return []
+    await session.execute(
+        update(Campaign)
+        .where(Campaign.id.in_(ids))
+        .values(status=CampaignStatus.paused, paused_reason=reason)
+    )
+    return ids
+
+
+async def list_paused_by_reason(
+    session: AsyncSession, *, reason: str
+) -> list[Campaign]:
+    """paused-кампании с данной причиной паузы (§5.3 авто-возобновление)."""
+    result = await session.execute(
+        select(Campaign)
+        .where(Campaign.status == CampaignStatus.paused)
+        .where(Campaign.paused_reason == reason)
+    )
+    return list(result.scalars().all())
+
+
+async def resume_paused_by_reason(
+    session: AsyncSession, *, reason: str
+) -> list[int]:
+    """paused с этой причиной → running, причина очищается (§5.3). `started_at`
+    не трогаем (кампания уже стартовала ранее). Возвращает id возобновлённых."""
+    result = await session.execute(
+        select(Campaign.id)
+        .where(Campaign.status == CampaignStatus.paused)
+        .where(Campaign.paused_reason == reason)
+    )
+    ids = [r[0] for r in result.all()]
+    if not ids:
+        return []
+    await session.execute(
+        update(Campaign)
+        .where(Campaign.id.in_(ids))
+        .values(status=CampaignStatus.running, paused_reason=None)
+    )
+    return ids

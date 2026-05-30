@@ -66,6 +66,24 @@ def test_participants_cache_membership():
     assert pc.is_member(-100, 42) is True
 
 
+def test_participants_cache_merge_and_db_loaded():
+    # §19 #11: merge подгружает наших ранее приглашённых, db_loaded — флаг «раз на чат».
+    pc = inv.ParticipantsCache()
+    assert pc.db_loaded(-100) is False
+    pc.merge_members(-100, {1, 2, 3})
+    assert pc.is_member(-100, 2) is True
+    assert pc.is_member(-100, 9) is False
+    pc.merge_members(-100, set())  # пустой merge безопасен
+    pc.mark_db_loaded(-100)
+    assert pc.db_loaded(-100) is True
+    assert pc.db_loaded(-200) is False
+    # merge не затирает уже добавленных
+    pc.add_member(-100, 5)
+    pc.merge_members(-100, {7})
+    assert pc.is_member(-100, 5) is True
+    assert pc.is_member(-100, 7) is True
+
+
 # --- parse_missing_invitees ---
 
 

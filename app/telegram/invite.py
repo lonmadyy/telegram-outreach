@@ -150,6 +150,7 @@ class ParticipantsCache:
     def __init__(self) -> None:
         self._members: dict[int, set[int]] = {}
         self._loaded: set[int] = set()
+        self._db_loaded: set[int] = set()
         self._locks: dict[int, asyncio.Lock] = {}
         self._global_lock = asyncio.Lock()
 
@@ -209,6 +210,19 @@ class ParticipantsCache:
 
     def add_member(self, chat_id: int, user_id: int) -> None:
         self._members.setdefault(chat_id, set()).add(user_id)
+
+    def merge_members(self, chat_id: int, user_ids: set[int]) -> None:
+        """Добавить известных участников (напр. БД-снимок наших инвайтов, §19 #11)."""
+        if not user_ids:
+            return
+        self._members.setdefault(chat_id, set()).update(user_ids)
+
+    def db_loaded(self, chat_id: int) -> bool:
+        """Подгружали ли уже БД-снимок приглашённых для этого чата (раз на процесс)."""
+        return chat_id in self._db_loaded
+
+    def mark_db_loaded(self, chat_id: int) -> None:
+        self._db_loaded.add(chat_id)
 
 
 participants_cache = ParticipantsCache()

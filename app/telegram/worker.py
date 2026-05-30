@@ -30,12 +30,14 @@ from app.db.models import (
 from app.db.repositories import accounts as accounts_repo
 from app.db.repositories import campaigns as campaigns_repo
 from app.db.repositories import logs as logs_repo
+from app.db.repositories import participants as participants_repo
 from app.db.repositories import processed as processed_repo
 from app.db.repositories import tasks as tasks_repo
 from app.db.repositories import templates as templates_repo
 from app.db.repositories.settings import settings_cache
 from app.db.session import session_scope
 from app.notifications.admin import notify_admin
+from app.telegram import antiflood
 from app.telegram import invite as invite_mod
 from app.telegram import spam_checker
 from app.telegram import warmup as warmup_mod
@@ -61,6 +63,9 @@ from app.utils.time import (
 # Дефолты на случай отсутствия настроек в кэше (один раз при старте).
 DEFAULT_INTERVAL_MIN = 300
 DEFAULT_INTERVAL_MAX = 540
+# Адаптивный (замедленный) интервал при недавнем PeerFlood в системе (§5.3).
+DEFAULT_FLOOD_INTERVAL_MIN = 450
+DEFAULT_FLOOD_INTERVAL_MAX = 720
 DEFAULT_DM_WARM = 40
 DEFAULT_INVITE_WARM = 100
 DEFAULT_DM_FRESH = 10
@@ -81,10 +86,21 @@ WARMUP_IDLE_SECONDS = 180
 
 
 def _interval_bounds() -> tuple[int, int]:
-    """Текущие interval_min_sec / interval_max_sec из кэша настроек."""
-    return (
+    """Интервал между действиями (§5.2 п.7). При недавнем флуде в системе —
+    адаптивный замедленный диапазон (§5.3), иначе обычный. Всё из кэша настроек;
+    адаптивный флаг читается синхронно из antiflood (его держит scheduler-джоба)."""
+    normal = (
         settings_cache.get_int("interval_min_sec", DEFAULT_INTERVAL_MIN),
         settings_cache.get_int("interval_max_sec", DEFAULT_INTERVAL_MAX),
+    )
+    flood = (
+        settings_cache.get_int("flood_interval_min_sec", DEFAULT_FLOOD_INTERVAL_MIN),
+        settings_cache.get_int("flood_interval_max_sec", DEFAULT_FLOOD_INTERVAL_MAX),
+    )
+    return antiflood.pick_interval(
+        adaptive=antiflood.is_adaptive_active(datetime.now(timezone.utc)),
+        normal=normal,
+        flood=flood,
     )
 
 
@@ -613,6 +629,16 @@ class WorkerAccount:
             )
             return
 
+        # §19 #11: один раз на чат подгружаем наших ранее приглашённых из БД в кэш,
+        # чтобы после рестарта не пытаться пригласить их повторно (инкрементальный снимок).
+        if not invite_mod.participants_cache.db_loaded(chat_id):
+            async with session_scope() as session:
+                invited_ids = await participants_repo.list_invited_user_ids(
+                    session, chat_id=chat_id
+                )
+            invite_mod.participants_cache.merge_members(chat_id, invited_ids)
+            invite_mod.participants_cache.mark_db_loaded(chat_id)
+
         # 3. Резолв получателя.
         peer = await peer_cache.get_or_resolve(self.client, username)
         if peer is None:
@@ -714,6 +740,12 @@ class WorkerAccount:
         async with session_scope() as session:
             await tasks_repo.mark_done(
                 session, task_id=task_id, result_code=ResultCode.ok
+            )
+            await participants_repo.add_invited(
+                session,
+                chat_id=chat_id,
+                user_id=peer.user_id,
+                campaign_id=campaign_id,
             )
             await campaigns_repo.update_counts(
                 session, campaign_id=campaign_id, sent_delta=1

@@ -313,3 +313,12 @@ async def list_active_during_quiet_start(session: AsyncSession) -> list[Account]
         select(Account).where(Account.status == AccountStatus.active)
     )
     return list(result.scalars().all())
+
+
+async def has_recovered_account(session: AsyncSession) -> bool:
+    """Есть ли хотя бы один рабочий аккаунт, способный слать сейчас (§5.3 resume):
+    status='active' (т.е. не spam_blocked/pause/warmup/dead/disabled)."""
+    result = await session.execute(
+        select(Account.id).where(Account.status == AccountStatus.active).limit(1)
+    )
+    return result.first() is not None

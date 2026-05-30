@@ -12,7 +12,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Callable
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -23,10 +23,12 @@ from loguru import logger
 from app.campaigns import progress as progress_mod
 from app.db.models import AccountStatus
 from app.db.repositories import accounts as accounts_repo
+from app.db.repositories import campaigns as campaigns_repo
 from app.db.repositories import logs as logs_repo
 from app.db.repositories.settings import settings_cache
 from app.db.session import session_scope
 from app.notifications.admin import notify_admin
+from app.telegram import antiflood
 from app.telegram.spam_checker import (
     get_interval_multiplier,
     spam_check,
@@ -52,6 +54,7 @@ class SchedulerService:
         self._tracked_accounts: set[int] = set()
         self._last_quiet_state: bool | None = None
         self._last_progress_at: datetime | None = None
+        self._last_global_flood: bool = False
 
     # ------------------ Lifecycle ------------------
 
@@ -73,6 +76,14 @@ class SchedulerService:
             self._progress_notify_job,
             IntervalTrigger(seconds=PROGRESS_TICK_SECONDS),
             id="progress_notify",
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True,
+        )
+        self._scheduler.add_job(
+            self._antiflood_check_job,
+            IntervalTrigger(minutes=1),
+            id="antiflood_check",
             replace_existing=True,
             max_instances=1,
             coalesce=True,
@@ -226,6 +237,97 @@ class SchedulerService:
         logger.info(
             "Quiet hours entered: {} accounts paused until end+jitter", len(active)
         )
+
+    async def _antiflood_check_job(self) -> None:
+        """§5.3: глобальная пауза при массовом флуде, адаптивный интервал, авто-resume.
+
+        Единый оркестратор. Источник окна флуда — таблица `logs` (БД). Раз в минуту:
+          • продлевает горячий флаг адаптивного интервала при недавнем флуде;
+          • при кворуме (все рабочие аккаунты зафлудили) — паузит running-кампании;
+          • при снятии флуда и появлении восстановленного аккаунта — возобновляет их.
+        """
+        now = datetime.now(timezone.utc)
+        quorum_window = settings_cache.get_int("flood_window_quorum_sec", 1800)
+        adaptive_window = settings_cache.get_int("flood_window_adaptive_sec", 3600)
+        adaptive_hold = settings_cache.get_int("flood_adaptive_hold_sec", 3600)
+
+        paused_ids: list[int] = []
+        resumed_ids: list[int] = []
+        park_size = 0
+        async with session_scope() as session:
+            park = {
+                a.id for a in await accounts_repo.list_for_worker_pool(session)
+            }
+            park_size = len(park)
+            flooded_quorum = await logs_repo.flooded_account_ids_since(
+                session, since=now - timedelta(seconds=quorum_window)
+            )
+            adaptive_flood = await logs_repo.exists_peer_flood_since(
+                session, since=now - timedelta(seconds=adaptive_window)
+            )
+
+            # 1. Адаптивный интервал: при недавнем флуде держим замедление (§5.3).
+            if adaptive_flood:
+                antiflood.set_adaptive_until(now + timedelta(seconds=adaptive_hold))
+
+            # 2. Глобальная пауза: все рабочие аккаунты зафлудили за окно (§5.3).
+            global_flood = antiflood.is_global_flood(flooded_quorum, park)
+            if global_flood and not self._last_global_flood:
+                paused_ids = await campaigns_repo.pause_running_with_reason(
+                    session, reason="global_flood"
+                )
+                if paused_ids:
+                    await logs_repo.log_event(
+                        session,
+                        level="error",
+                        event_type="campaign_paused_global_flood",
+                        message=(
+                            f"Массовый PeerFlood ({park_size} акк.): "
+                            f"пауза кампаний {paused_ids}"
+                        ),
+                        payload={"campaigns": paused_ids, "park": park_size},
+                    )
+            self._last_global_flood = global_flood
+
+            # 3. Авто-возобновление: флуд снят и есть восстановленный аккаунт (§5.3).
+            if not global_flood:
+                flood_paused = await campaigns_repo.list_paused_by_reason(
+                    session, reason="global_flood"
+                )
+                recovered = await accounts_repo.has_recovered_account(session)
+                if antiflood.should_auto_resume(
+                    has_recovered_account=recovered,
+                    has_flood_paused_campaigns=bool(flood_paused),
+                ):
+                    resumed_ids = await campaigns_repo.resume_paused_by_reason(
+                        session, reason="global_flood"
+                    )
+                    if resumed_ids:
+                        await logs_repo.log_event(
+                            session,
+                            level="info",
+                            event_type="campaign_resumed_global_flood",
+                            message=f"Флуд снят, возобновлены кампании {resumed_ids}",
+                            payload={"campaigns": resumed_ids},
+                        )
+
+        # Уведомления админу — вне транзакции (best-effort).
+        if paused_ids:
+            try:
+                await notify_admin(
+                    f"⛔ Массовый PeerFlood: все {park_size} рабочих аккаунтов "
+                    f"под ограничением. Кампании {paused_ids} на паузе — "
+                    f"возобновятся автоматически при снятии."
+                )
+            except Exception:
+                logger.exception("antiflood pause notify failed")
+        if resumed_ids:
+            try:
+                await notify_admin(
+                    f"✓ Ограничения сняты — кампании {resumed_ids} возобновлены."
+                )
+            except Exception:
+                logger.exception("antiflood resume notify failed")
 
 
 def _offset_now(seconds: float) -> datetime:
