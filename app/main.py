@@ -21,6 +21,7 @@ from alembic import command
 from alembic.config import Config
 from loguru import logger
 
+from app.bot.commands import setup_bot_commands
 from app.bot.main import build_bot, build_dispatcher
 from app.campaigns.manager import recover_at_startup
 from app.db.repositories.settings import settings_cache
@@ -69,6 +70,7 @@ async def _async_main() -> None:
         dp = build_dispatcher()
         logger.info("Starting bot polling")
         await bot.delete_webhook(drop_pending_updates=True)
+        await setup_bot_commands(bot)  # нативная кнопка «Меню» (список команд)
         await dp.start_polling(
             bot, allowed_updates=dp.resolve_used_update_types()
         )

@@ -7,7 +7,14 @@ from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
-from app.bot.keyboards import main_menu
+from app.bot.keyboards import (
+    BTN_ACCOUNTS,
+    BTN_CAMPAIGNS,
+    BTN_MENU,
+    BTN_STATUS,
+    main_menu,
+    reply_menu_kb,
+)
 from app.telegram.auth import auth_store
 
 router = Router(name="common")
@@ -28,6 +35,12 @@ HELP_TEXT = (
 @router.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext) -> None:
     await state.clear()
+    # Ставим постоянную нижнюю клавиатуру, затем показываем inline-меню действий.
+    await message.answer(
+        "Клавиатура меню включена. Полный список команд — в кнопке «Меню» "
+        "слева от поля ввода.",
+        reply_markup=reply_menu_kb(),
+    )
     await message.answer(HELP_TEXT, reply_markup=main_menu())
 
 
@@ -56,3 +69,48 @@ async def cb_cancel(query: CallbackQuery, state: FSMContext) -> None:
     if query.message is not None:
         await query.message.answer("Сценарий отменён.", reply_markup=main_menu())
     await query.answer()
+
+
+# ---------------------------------------------------------------------------
+# Reply-клавиатура (§10.6). Хэндлеры в common-роутере (он включается ПЕРВЫМ) и
+# БЕЗ StateFilter — перехватывают кнопки в любом состоянии РАНЬШЕ FSM-хэндлеров,
+# чтобы текст кнопки не попал во ввод сценария (телефон/чат/шаблон). Каждая кнопка
+# корректно выходит из сценария (FSM + auth_store), как /cancel, затем делегирует
+# существующему обработчику (ленивый импорт — без циклических импортов на модуле).
+# ---------------------------------------------------------------------------
+
+
+async def _exit_scenario(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    if message.from_user is not None:
+        await auth_store.clear(message.from_user.id)
+
+
+@router.message(F.text == BTN_MENU)
+async def rb_menu(message: Message, state: FSMContext) -> None:
+    await _exit_scenario(message, state)
+    await message.answer("Действия:", reply_markup=main_menu())
+
+
+@router.message(F.text == BTN_STATUS)
+async def rb_status(message: Message, state: FSMContext) -> None:
+    await _exit_scenario(message, state)
+    from app.bot.handlers.status import cmd_status
+
+    await cmd_status(message)
+
+
+@router.message(F.text == BTN_ACCOUNTS)
+async def rb_accounts(message: Message, state: FSMContext) -> None:
+    await _exit_scenario(message, state)
+    from app.bot.handlers.accounts import list_accounts
+
+    await list_accounts(message)
+
+
+@router.message(F.text == BTN_CAMPAIGNS)
+async def rb_campaigns(message: Message, state: FSMContext) -> None:
+    await _exit_scenario(message, state)
+    from app.bot.handlers.campaigns import list_campaigns
+
+    await list_campaigns(message)

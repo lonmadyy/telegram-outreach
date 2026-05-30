@@ -2,7 +2,32 @@
 
 from __future__ import annotations
 
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.types import (
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    KeyboardButton,
+    ReplyKeyboardMarkup,
+)
+
+# Тексты reply-кнопок постоянной клавиатуры. Уникальны (эмодзи) — перехватываются
+# в common-роутере (первым) до FSM, чтобы не путаться с вводом сценариев.
+BTN_MENU = "☰ Меню"
+BTN_STATUS = "📊 Статус"
+BTN_ACCOUNTS = "👤 Аккаунты"
+BTN_CAMPAIGNS = "📢 Кампании"
+
+
+def reply_menu_kb() -> ReplyKeyboardMarkup:
+    """Постоянная нижняя клавиатура быстрого доступа (§10.6)."""
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text=BTN_MENU), KeyboardButton(text=BTN_STATUS)],
+            [KeyboardButton(text=BTN_ACCOUNTS), KeyboardButton(text=BTN_CAMPAIGNS)],
+        ],
+        resize_keyboard=True,
+        is_persistent=True,
+        input_field_placeholder="Команда или кнопка ниже…",
+    )
 
 
 def main_menu() -> InlineKeyboardMarkup:
