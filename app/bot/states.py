@@ -22,5 +22,6 @@ class NewCampaign(StatesGroup):
     waiting_type = State()
     waiting_txt = State()
     waiting_resend_decision = State()
-    waiting_template = State()
+    waiting_template = State()       # только для message
+    waiting_target_chat = State()    # только для invite (§10.4)
     waiting_confirm = State()

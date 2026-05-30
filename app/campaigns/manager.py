@@ -1,27 +1,20 @@
 """Оркестрация кампаний. ARCHITECTURE.md §9.1, §10.4.
 
-В MVP-2 — один воркер на одну рассылочную кампанию. В MVP-3 пул воркеров
-и SKIP LOCKED-захват задач придёт сюда же без поломки публичного API.
+В MVP-3 воркеры долгоживущие (WorkerPool), не привязаны к одной кампании.
+Manager отвечает только за CRUD и state-transitions самих кампаний — задачи
+подхватит первый свободный воркер через SKIP LOCKED.
 """
 
 from __future__ import annotations
 
-import asyncio
-
 from loguru import logger
-from sqlalchemy import select
 
-from app.db.models import Account, AccountStatus, CampaignStatus
+from app.db.models import CampaignStatus
 from app.db.repositories import campaigns as campaigns_repo
 from app.db.repositories import logs as logs_repo
 from app.db.repositories import processed as processed_repo
 from app.db.repositories import tasks as tasks_repo
 from app.db.session import session_scope
-from app.telegram.worker import run_campaign_worker
-
-
-# campaign_id → asyncio.Task запущенного воркера.
-_running_workers: dict[int, asyncio.Task] = {}
 
 
 async def create_tasks_for_campaign(
@@ -56,23 +49,8 @@ async def create_tasks_for_campaign(
     return len(to_create), skipped
 
 
-async def _pick_worker_account() -> Account | None:
-    """В MVP-2 берём первый аккаунт со статусом active или warmup."""
-    async with session_scope() as session:
-        result = await session.execute(
-            select(Account)
-            .where(Account.status.in_([AccountStatus.active, AccountStatus.warmup]))
-            .order_by(Account.id)
-            .limit(1)
-        )
-        return result.scalar_one_or_none()
-
-
 async def start_campaign(campaign_id: int) -> tuple[bool, str]:
-    """Активирует кампанию и запускает worker.
-
-    Возвращает (started, message). Не падает на «нет аккаунтов» — возвращает False.
-    """
+    """Переводит кампанию в running. Долгоживущий WorkerPool сам подберёт задачи."""
     async with session_scope() as session:
         campaign = await campaigns_repo.get_by_id(session, campaign_id)
         if campaign is None:
@@ -82,23 +60,6 @@ async def start_campaign(campaign_id: int) -> tuple[bool, str]:
                 False,
                 f"Кампания в статусе {campaign.status.value}, старт невозможен",
             )
-
-    account = await _pick_worker_account()
-    if account is None:
-        async with session_scope() as session:
-            await campaigns_repo.set_status(
-                session, campaign_id=campaign_id, status=CampaignStatus.failed
-            )
-            await logs_repo.log_event(
-                session,
-                level="error",
-                event_type="campaign_failed",
-                campaign_id=campaign_id,
-                message="Нет доступных аккаунтов (active/warmup)",
-            )
-        return False, "Нет доступных аккаунтов для работы"
-
-    async with session_scope() as session:
         await campaigns_repo.set_status(
             session, campaign_id=campaign_id, status=CampaignStatus.running
         )
@@ -107,23 +68,10 @@ async def start_campaign(campaign_id: int) -> tuple[bool, str]:
             level="info",
             event_type="campaign_started",
             campaign_id=campaign_id,
-            account_id=account.id,
-            message=f"Кампания #{campaign_id} запущена на аккаунте {account.phone}",
+            message=f"Кампания #{campaign_id} переведена в running",
         )
 
-    # Запускаем воркер в фоне.
-    existing = _running_workers.get(campaign_id)
-    if existing is not None and not existing.done():
-        return True, "Воркер уже запущен (повторный старт проигнорирован)"
-
-    task = asyncio.create_task(
-        run_campaign_worker(campaign_id=campaign_id, account_id=account.id),
-        name=f"campaign-{campaign_id}-account-{account.id}",
-    )
-    _running_workers[campaign_id] = task
-    task.add_done_callback(lambda _t: _running_workers.pop(campaign_id, None))
-
-    return True, f"Кампания #{campaign_id} запущена на {account.phone}"
+    return True, f"Кампания #{campaign_id} в работе. Воркеры подхватят задачи."
 
 
 async def pause_campaign(campaign_id: int) -> tuple[bool, str]:
@@ -182,33 +130,31 @@ async def stop_campaign(campaign_id: int) -> tuple[bool, str]:
             campaign_id=campaign_id,
             message=f"Кампания #{campaign_id} отменена",
         )
+    # Чистим in-memory реестр непригодных для инвайта аккаунтов (MVP-4 §5.3),
+    # чтобы новая кампания с этим id не наследовала старые пометки (MVP-6, гигиена).
+    try:
+        from app.telegram import invite as invite_mod
+
+        invite_mod.reset_campaign(campaign_id)
+    except Exception:
+        logger.debug("reset_campaign ineligible failed for #{}", campaign_id)
     # Воркер сам обнаружит и завершится.
     return True, "Отменено"
 
 
-def is_worker_running(campaign_id: int) -> bool:
-    task = _running_workers.get(campaign_id)
-    return task is not None and not task.done()
+async def recover_at_startup() -> None:
+    """§9.3 «При перезапуске» + §18.4 шаг 6.
 
-
-async def resume_running_campaigns_at_startup() -> int:
-    """При старте приложения возобновляем все кампании в статусе running.
-
-    Также возвращает stuck-in-progress задачи в queued (§9.3 «При перезапуске»).
-    Возвращает кол-во возобновлённых кампаний.
+    Возвращает зависшие in_progress задачи (>1ч без обновления) в queued.
+    Все кампании status=running остаются как есть — пул воркеров сам подхватит.
     """
     async with session_scope() as session:
         recovered = await tasks_repo.recover_stuck_in_progress(session)
         if recovered:
             logger.info("Recovered {} stuck in_progress tasks → queued", recovered)
-        running = await campaigns_repo.list_running(session)
-
-    count = 0
-    for campaign in running:
-        ok, msg = await start_campaign(campaign.id)
-        if ok:
-            count += 1
-            logger.info("Resumed campaign #{}: {}", campaign.id, msg)
-        else:
-            logger.warning("Failed to resume campaign #{}: {}", campaign.id, msg)
-    return count
+            await logs_repo.log_event(
+                session,
+                level="info",
+                event_type="tasks_recovered",
+                message=f"При старте: {recovered} зависших задач возвращены в queued",
+            )

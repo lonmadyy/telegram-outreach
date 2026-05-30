@@ -11,6 +11,9 @@ from loguru import logger
 from app.bot.handlers import accounts as accounts_handlers
 from app.bot.handlers import campaigns as campaigns_handlers
 from app.bot.handlers import common as common_handlers
+from app.bot.handlers import export as export_handlers
+from app.bot.handlers import settings as settings_handlers
+from app.bot.handlers import status as status_handlers
 from app.bot.handlers import templates as templates_handlers
 from app.bot.middlewares import AuthMiddleware
 from app.config import settings
@@ -38,11 +41,15 @@ def build_dispatcher() -> Dispatcher:
     dp.include_router(accounts_handlers.router)
     dp.include_router(templates_handlers.router)
     dp.include_router(campaigns_handlers.router)
+    dp.include_router(export_handlers.router)
+    dp.include_router(settings_handlers.router)
+    dp.include_router(status_handlers.router)
 
     return dp
 
 
 async def run_bot() -> None:
+    """Standalone-режим (без worker pool). Оставлено для возможного использования."""
     bot = build_bot()
     dp = build_dispatcher()
     logger.info("Starting bot polling, allowed_user_ids={}", settings.allowed_user_ids)

@@ -28,6 +28,9 @@ from app.telegram.auth import (
     submit_password,
 )
 from app.telegram.client_factory import normalize_phone, parse_proxy, session_path_for
+from app.telegram import warmup as warmup_mod
+from app.telegram.worker_pool import worker_pool
+from app.scheduler.jobs import get_scheduler
 
 router = Router(name="accounts")
 
@@ -290,13 +293,39 @@ async def on_proxy(message: Message, state: FSMContext) -> None:
             payload={"with_proxy": proxy_url is not None, "username": acc.username},
         )
 
+    # Warmup-подписка на каналы, пока клиент ещё авторизован (§5.1, MVP-5). Best-effort.
+    joined = 0
+    try:
+        joined = await warmup_mod.subscribe_to_warmup_channels(sess.client)
+    except Exception:
+        logger.exception("warmup subscribe failed for {}", sess.phone)
+
+    # Отключаем клиент авторизации (освобождает .session для воркера).
     await finalize(sess)
     await auth_store.clear(message.from_user.id)
     await state.clear()
 
+    # Поднимаем воркер сразу — аккаунт начинает греться без рестарта (MVP-5, §10.3).
+    started = False
+    try:
+        worker = await worker_pool.start_for(acc)
+        started = worker is not None
+        if started:
+            sched = get_scheduler()
+            if sched is not None:
+                sched.add_spamcheck_for_account(acc.id)
+    except Exception:
+        logger.exception("start worker for new account {} failed", acc.id)
+
+    start_note = (
+        "воркер запущен, аккаунт греется"
+        if started
+        else "воркер поднимется при следующем рестарте"
+    )
     await message.answer(
         f"Аккаунт <b>{sess.phone}</b> добавлен.\n"
         f"id={acc.id} | status={acc.status.value} | "
-        f"warmup до {acc.warmup_until:%Y-%m-%d %H:%M} UTC",
+        f"warmup до {acc.warmup_until:%Y-%m-%d %H:%M} UTC\n"
+        f"Подписан на каналов: {joined} | {start_note}.",
         reply_markup=main_menu(),
     )

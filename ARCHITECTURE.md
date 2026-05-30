@@ -490,6 +490,8 @@ adaptive_limit_reduction_days = 7
 
 Каналы для warmup-подписки задаются в `config.py` константой (например, крупные новостные/тематические каналы — Pavel Durov, Telegram Tips и т.д.). Это безопасно, не палится, делает «историю» аккаунта более правдоподобной.
 
+Реализация (MVP-5, гибрид): подписка на `WARMUP_CHANNELS` (constants.py) выполняется разово при добавлении аккаунта, пока клиент авторизован; далее воркер во время warmup-периода периодически «оживляет» аккаунт (онлайн-статус + чтение случайного канала, опционально Saved Messages в 12–24ч). По истечении `warmup_until` воркер сам переводит аккаунт `warmup → active`. DB-снимок участников/расширенный сценарий — за пределами v1.
+
 #### Дневные лимиты
 - DM (рассылка): **40** для прогретых, **10** для warmup.
 - Invite: **100** для прогретых, **5** для warmup.
@@ -586,7 +588,9 @@ except (UserPrivacyRestrictedError, UserNotMutualContactError) as e:
     return map_invite_error(e)
 ```
 
-Проверка членства реализуется через кэш `participants_cache`, который заполняется при старте кампании одним вызовом `GetParticipantsRequest` (или через iter_participants для больших чатов с пагинацией). Кэш хранится в памяти процесса + сохраняется снимок в Postgres для restart.
+Проверка членства реализуется через кэш `participants_cache`, который заполняется при первом обращении к чату (`iter_participants` с пагинацией и лимитом). **В v1 (MVP-4) кэш хранится только в памяти процесса**; после рестарта он перезаполняется при первом инвайте в чат. Снимок в Postgres для restart — отложен (см. раздел 19). После успешного инвайта `user_id` добавляется в кэш, чтобы параллельные воркеры не пытались пригласить его повторно.
+
+Помимо исключений, успех инвайта подтверждается инспекцией поля `missing_invitees` в ответе `InviteToChannelRequest`: если Telegram молча не добавил пользователя (приватность/премиум-ограничение), это трактуется как `skip` (`privacy_restricted`) — запись в `processed_clients` и инкремент счётчика происходят **только** при фактическом добавлении (§4.6). Имитация набора (`typing`) для инвайта не выполняется — только короткая пауза `pre_action_pause` (в отличие от DM).
 
 ### 5.3. Уровень кампании
 
@@ -733,6 +737,8 @@ RETURNING *;
 
 `SKIP LOCKED` гарантирует, что параллельные воркеры не возьмут одну и ту же задачу. Если задача никем не залочена — её захватит первый воркер, остальные пройдут мимо.
 
+Захват дополнительно фильтруется (MVP-4/5): `exclude_campaign_ids` исключает invite-кампании, в чат которых аккаунт не может приглашать (§5.3); `allowed_types` ограничивает типами, доступными по дневному лимиту (§5.1) — warmup-аккаунт с `invite=0` физически не захватит invite-задачу. Это и есть «реальная проверка по типу» — без отката после захвата и без busy-loop.
+
 ### 6.3. Обработка FloodWait
 
 ```python
@@ -874,8 +880,14 @@ def parse_spambot_response(text: str) -> ParsedSpamStatus:
     # 3. Чисто
     if any(k in lower for k in [
         'good news', 'no limits', 'no restrictions',
-        'хорошие новости', 'нет ограничений'
+        'хорошие новости', 'нет ограничений',
+        'ограничения сняты', 'ограничений нет'
     ]):
+        return ParsedSpamStatus('no_limits')
+    # Реальный русский ответ «Ваш аккаунт свободен от каких-либо ограничений»:
+    # сочетание «свобод» + «ограничен». Блоки 1–2 уже отсеяли temporary/permanent,
+    # поэтому блокировки (где есть «ограничен», но нет «свобод») сюда не попадут.
+    if 'свобод' in lower and 'ограничен' in lower:
         return ParsedSpamStatus('no_limits')
     
     # 4. Soft warning ("some users may consider your messages as spam")
@@ -1105,8 +1117,10 @@ state: waiting_proxy
     user: "skip" или "socks5://..."
     bot: проверяет прокси через подключение тестовое (опционально)
         → сохраняет аккаунт в БД со статусом 'warmup', warmup_until = now + 48h
-        → запускает воркер
-        → "Аккаунт @username добавлен. Warmup до <дата>."
+        → warmup-подписка на каналы, пока клиент авторизован (§5.1, MVP-5)
+        → запускает воркер (worker_pool.start_for) + регистрирует spamcheck-задачу:
+          аккаунт греется СРАЗУ, без рестарта приложения
+        → "Аккаунт @username добавлен, подписан на N каналов. Warmup до <дата>."
 ```
 
 При каждом шаге бот может принять `/cancel` и сбросить FSM. Промежуточный код хранится в FSM-context (`aiogram` поддерживает Redis/Memory storage; мы используем `MemoryStorage` — для одного админа достаточно).
@@ -1148,6 +1162,8 @@ ETA: ~9ч 30мин
 ```
 
 При критических событиях (PeerFlood, dead аккаунт, ошибка БД) — немедленное уведомление.
+
+Реализация (MVP-5): `progress_notify_job` тикает каждую минуту, но шлёт сводку не чаще `progress_notify_interval_sec` и ТОЛЬКО при наличии running-кампаний (в простое молчит). ETA — приблизительная (по средней скорости обработки с `started_at`). Доставка — через `notify_admin` всем `ALLOWED_USER_IDS`.
 
 ### 10.6. Кнопки и инлайн-навигация
 
@@ -1549,7 +1565,7 @@ from telethon.errors import (
     FloodWaitError, PeerFloodError,
     UserPrivacyRestrictedError, UserNotMutualContactError,
     UsernameInvalidError, UsernameNotOccupiedError,
-    UserDeactivatedError, UserBannedInChannelError,
+    UserBannedInChannelError,
     ChatAdminRequiredError, UserAlreadyParticipantError,
     ChannelPrivateError, UsersTooMuchError,
     InputUserDeactivatedError, UserIsBlockedError,
@@ -1561,8 +1577,9 @@ ERROR_MAP = {
     UserNotMutualContactError: ('not_mutual_contact', 'skip'),
     UsernameInvalidError: ('not_found', 'skip'),
     UsernameNotOccupiedError: ('not_found', 'skip'),
-    UserDeactivatedError: ('deactivated', 'skip'),
     UserBannedInChannelError: ('banned_in_channel', 'skip'),
+    # UserDeactivatedError здесь НЕТ: это 401 (наш аккаунт удалён/забанен) →
+    # SESSION_DEAD_ERRORS. InputUserDeactivatedError (код 400) — удалён получатель.
     InputUserDeactivatedError: ('deactivated', 'skip'),
     UserIsBlockedError: ('privacy_restricted', 'skip'),
     UserAlreadyParticipantError: ('already_member', 'skip'),
@@ -1577,6 +1594,26 @@ ERROR_MAP = {
 - `'skip'` — задача помечается failed с этим кодом, переходим к следующей.
 - `'fatal'` — кампания останавливается (например, целевой чат недоступен для всех аков).
 - `FloodWaitError` и `PeerFloodError` обрабатываются отдельно (см. раздел 6).
+
+**Недействительная сессия в рантайме (MVP-5).** Ошибки уровня 401 (`UnauthorizedError`
+и подклассы, в т.ч. `AuthKeyUnregisteredError` — «The key is not registered in the
+system», а также `UserDeactivatedError`/`UserDeactivatedBanError` — наш аккаунт
+удалён/забанен) означают, что сессия/аккаунт мертвы (разлогин, отзыв сессии, бан/деактивация).
+Это особенно частая казнь свежих аккаунтов при ранней автоматизации (см. §5.1, §14.4).
+Такие ошибки в воркере (действия) и в `spamcheck_job` ловятся как `SESSION_DEAD_ERRORS`
+и **немедленно** переводят аккаунт в `dead` + уведомляют админа + останавливают воркер —
+без них воркер «висел» бы на мёртвой сессии, а `spamcheck` шумел бы ошибкой каждые 4 минуты.
+
+**Инвайт: per-account обработка ошибок прав (MVP-4, §5.3).** Задачи распределяются
+через `SKIP LOCKED` любому воркеру, но пригласить может только аккаунт-участник
+целевого чата с правом `invite_users`. Поэтому в invite-режиме `ChatAdminRequiredError`
+и `ChannelPrivateError` трактуются **по-аккаунтно**, а не сразу `'fatal'`: аккаунт
+помечается непригодным для этой кампании (in-memory), его задача возвращается в очередь
+(`requeue`) и достаётся другому аккаунту; в `claim_next_task` такой аккаунт исключает эту
+кампанию (`exclude_campaign_ids`). Кампания переходит в `paused` (`'fatal'`-аналог) только
+когда непригодны **все** рабочие аккаунты. В message-режиме эти ошибки остаются `'fatal'`
+(целевой чат недоступен в принципе). На этапе создания инвайт-кампании FSM резолвит чат и
+проверяет право каждого аккаунта, показывая разбивку eligible/ineligible (§10.4).
 
 ### 16.2. Универсальный wrapper
 
@@ -1736,6 +1773,7 @@ tar xzf sessions_<ts>.tar.gz
 8. **Импорт списка из CSV/Excel** с дополнительными переменными.
 9. **Webhook вместо polling** для управляющего бота (требует TLS на VPS).
 10. **Многопользовательский режим**: разные админы видят свои аккаунты и кампании.
+11. **DB-снимок кэша participants** (§5.2): сохранять members целевых чатов в Postgres, чтобы инвайт-кампания не перезаполняла кэш после рестарта. В MVP-4 кэш только in-memory.
 
 ---
 

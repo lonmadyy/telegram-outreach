@@ -38,12 +38,7 @@ def campaign_type_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="Рассылка (DM)", callback_data="ctype:message")],
-            [
-                InlineKeyboardButton(
-                    text="Инвайт в чат (доступно в MVP-4)",
-                    callback_data="ctype:invite_disabled",
-                )
-            ],
+            [InlineKeyboardButton(text="Инвайт в чат", callback_data="ctype:invite")],
             [InlineKeyboardButton(text="Отмена", callback_data="cancel")],
         ]
     )

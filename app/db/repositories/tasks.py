@@ -8,11 +8,13 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import select, text, update
-from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy import Integer, String, bindparam, select, text, update
+from sqlalchemy.dialects.postgresql import ARRAY, insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import ResultCode, Task, TaskStatus
+from app.db.models import CampaignType, ResultCode, Task, TaskStatus
+
+_ALL_CAMPAIGN_TYPES = [t.value for t in CampaignType]
 
 
 async def bulk_create(
@@ -52,13 +54,22 @@ async def get_next_queued(
 
 # Точный SQL из ARCHITECTURE.md §6.2. WITH ... FOR UPDATE SKIP LOCKED + UPDATE.
 # Гарантирует, что параллельные воркеры не возьмут одну и ту же задачу.
+#
+# :exclude_ids — кампании, которые ЭТОТ аккаунт не может обрабатывать (MVP-4:
+# invite-кампании, где он не участник/без прав §5.3). Пустой массив = без
+# исключений (поведение MVP-3): `campaign_id = ANY('{}')` → FALSE → NOT FALSE → TRUE.
+# :allowed_types — типы кампаний, доступные аккаунту по дневному лимиту (MVP-5
+# §5.1: warmup invite=0 → только 'message'). Сравнение enum через ::text.
 _CLAIM_NEXT_TASK_SQL = text(
     """
     WITH next_task AS (
         SELECT id FROM tasks
         WHERE campaign_id IN (
-            SELECT id FROM campaigns WHERE status = 'running'
+            SELECT id FROM campaigns
+            WHERE status = 'running'
+              AND type::text = ANY(:allowed_types)
         )
+          AND NOT (campaign_id = ANY(:exclude_ids))
           AND status = 'queued'
           AND (locked_until IS NULL OR locked_until <= NOW())
         ORDER BY id
@@ -74,22 +85,45 @@ _CLAIM_NEXT_TASK_SQL = text(
     WHERE t.id = next_task.id
     RETURNING t.id, t.campaign_id, t.username
     """
+).bindparams(
+    bindparam("exclude_ids", type_=ARRAY(Integer)),
+    bindparam("allowed_types", type_=ARRAY(String)),
 )
 
 
 async def claim_next_task(
-    session: AsyncSession, *, account_id: int
+    session: AsyncSession,
+    *,
+    account_id: int,
+    exclude_campaign_ids: list[int] | None = None,
+    allowed_types: list[str] | None = None,
 ) -> dict | None:
     """Атомарно захватывает следующую queued задачу любой running кампании.
 
     ARCHITECTURE.md §6.2. Использует FOR UPDATE SKIP LOCKED — параллельные
     воркеры конкурируют, но никогда не получат одну задачу.
 
+    `exclude_campaign_ids` — кампании, которые этот аккаунт пропускает (MVP-4
+    §5.3: invite-кампании, в чат которых он не может приглашать). None/пусто →
+    поведение MVP-3 без исключений.
+
+    `allowed_types` — типы кампаний, доступные аккаунту по дневному лимиту (MVP-5
+    §5.1: например warmup-аккаунт с invite=0 → передаётся только ['message']).
+    None → разрешены все типы (обратная совместимость).
+
     Возвращает dict с минимальной нужной информацией (id, campaign_id, username)
     или None если очередь пуста (или все задачи залочены другими воркерами).
     """
     result = await session.execute(
-        _CLAIM_NEXT_TASK_SQL, {"account_id": account_id}
+        _CLAIM_NEXT_TASK_SQL,
+        {
+            "account_id": account_id,
+            "exclude_ids": list(exclude_campaign_ids or []),
+            "allowed_types": (
+                list(allowed_types) if allowed_types is not None
+                else list(_ALL_CAMPAIGN_TYPES)
+            ),
+        },
     )
     row = result.fetchone()
     if row is None:
@@ -210,3 +244,13 @@ async def count_remaining_queued(
         .where(Task.status.in_([TaskStatus.queued, TaskStatus.in_progress]))
     )
     return len(result.all())
+
+
+async def list_for_campaign(
+    session: AsyncSession, *, campaign_id: int
+) -> list[Task]:
+    """Все задачи кампании по возрастанию id — для CSV-отчёта (MVP-6, §10.2)."""
+    result = await session.execute(
+        select(Task).where(Task.campaign_id == campaign_id).order_by(Task.id)
+    )
+    return list(result.scalars().all())

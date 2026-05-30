@@ -1,7 +1,9 @@
 """Хендлеры кампаний. ARCHITECTURE.md §10.2, §10.4.
 
-В MVP-2 поддерживается только тип `message` (рассылка). Ветка invite
-покажет заглушку «доступно в MVP-4».
+Поддерживаются оба типа кампаний:
+  • message — выбор шаблона → подтверждение → старт.
+  • invite (MVP-4) — ввод целевого чата, резолв + проверка прав инвайта по
+    каждому аккаунту (разбивка eligible/ineligible) → подтверждение → старт.
 """
 
 from __future__ import annotations
@@ -26,6 +28,8 @@ from app.db.models import CampaignType
 from app.db.repositories import campaigns as campaigns_repo
 from app.db.repositories import templates as templates_repo
 from app.db.session import session_scope
+from app.telegram import invite as invite_mod
+from app.telegram.worker_pool import worker_pool
 from app.utils.txt_parser import parse_txt_usernames
 
 router = Router(name="campaigns")
@@ -85,14 +89,12 @@ async def cmd_new_campaign(event, state: FSMContext) -> None:
 @router.callback_query(NewCampaign.waiting_type, F.data.startswith("ctype:"))
 async def on_campaign_type(query: CallbackQuery, state: FSMContext) -> None:
     choice = (query.data or "").removeprefix("ctype:")
-    if choice == "invite_disabled":
-        await query.answer("Инвайт-кампания будет в MVP-4.", show_alert=True)
-        return
-    if choice != "message":
+    if choice not in ("message", "invite"):
         await query.answer("Неизвестный тип", show_alert=True)
         return
 
-    await state.update_data(campaign_type=CampaignType.message.value)
+    ctype = CampaignType.message if choice == "message" else CampaignType.invite
+    await state.update_data(campaign_type=ctype.value)
     await state.set_state(NewCampaign.waiting_txt)
     if query.message is not None:
         await query.message.answer(
@@ -175,6 +177,23 @@ async def on_resend_decision(query: CallbackQuery, state: FSMContext) -> None:
     resend = (query.data or "").removeprefix("resend:") == "yes"
     await state.update_data(resend_old=resend)
 
+    data = await state.get_data()
+    ctype = data.get("campaign_type")
+
+    # Инвайт: вместо выбора шаблона спрашиваем целевой чат (§10.4).
+    if ctype == CampaignType.invite.value:
+        await state.set_state(NewCampaign.waiting_target_chat)
+        if query.message is not None:
+            await query.message.answer(
+                "Введите целевой чат: <b>@username</b>, ссылку <code>t.me/...</code> "
+                "или ID <code>-100…</code>.\n"
+                "Рабочие аккаунты должны состоять в этом чате с правом приглашать.",
+                reply_markup=cancel_kb(),
+            )
+        await query.answer()
+        return
+
+    # Рассылка: выбор шаблона.
     async with session_scope() as session:
         templates = await templates_repo.list_templates(session)
 
@@ -233,29 +252,139 @@ async def on_pick_template(query: CallbackQuery, state: FSMContext) -> None:
     await query.answer()
 
 
+@router.message(NewCampaign.waiting_target_chat, F.text)
+async def on_target_chat(message: Message, state: FSMContext) -> None:
+    """Invite §10.4: ввод целевого чата + проверка прав по каждому аккаунту."""
+    raw = (message.text or "").strip()
+    if not raw:
+        await message.answer(
+            "Пустой ввод. Введите @username / ссылку / ID чата или /cancel.",
+            reply_markup=cancel_kb(),
+        )
+        return
+    if invite_mod.normalize_target_input(raw) is None:
+        await message.answer(
+            "Не распознал чат. Поддерживается @username, t.me/username или ID -100…\n"
+            "Инвайт по приватной ссылке (+hash) не поддерживается (§1.3). "
+            "Повторите ввод или /cancel.",
+            reply_markup=cancel_kb(),
+        )
+        return
+
+    account_ids = worker_pool.all_account_ids()
+    if not account_ids:
+        await message.answer(
+            "Нет активных аккаунтов-воркеров. Добавьте/запустите аккаунт и повторите.",
+            reply_markup=main_menu(),
+        )
+        await state.clear()
+        return
+
+    # Резолвим чат (первым успешным аккаунтом) + проверяем право инвайта у каждого.
+    resolved = None
+    eligible: list[int] = []
+    ineligible: list[int] = []
+    for aid in account_ids:
+        client = worker_pool.get_client(aid)
+        if client is None:
+            ineligible.append(aid)
+            continue
+        if resolved is None:
+            resolved = await invite_mod.resolve_target(client, raw)
+        can = await invite_mod.check_invite_permission(client, raw)
+        (eligible if can else ineligible).append(aid)
+
+    if resolved is None:
+        await message.answer(
+            "Чат не найден или ни один аккаунт его не видит. Проверьте адрес и "
+            "членство аккаунтов. Повторите ввод или /cancel.",
+            reply_markup=cancel_kb(),
+        )
+        return
+    if not eligible:
+        await message.answer(
+            f"Чат <b>{resolved.title}</b> найден, но НИ ОДИН аккаунт не имеет права "
+            f"приглашать. Добавьте аккаунты в чат с правом «Добавление участников» и "
+            f"повторите. /cancel — отмена.",
+            reply_markup=cancel_kb(),
+        )
+        return
+
+    await state.update_data(
+        target_chat=raw,
+        target_chat_id=resolved.chat_id,
+        target_title=resolved.title,
+    )
+    data = await state.get_data()
+    usernames = data.get("usernames", [])
+    resend_old = data.get("resend_old", False)
+
+    warn = ""
+    if ineligible:
+        warn = (
+            f"\n⚠ Без прав инвайта: {len(ineligible)} — будут пропускать кампанию, "
+            f"их задачи возьмут остальные."
+        )
+    await state.set_state(NewCampaign.waiting_confirm)
+    await message.answer(
+        f"<b>Готово к старту (инвайт):</b>\n"
+        f"• Цель: <b>{resolved.title}</b> (<code>{resolved.chat_id}</code>)\n"
+        f"• Username в работе: {len(usernames)}\n"
+        f"• Переотправлять &gt;180 дней: {'да' if resend_old else 'нет'}\n"
+        f"• Аккаунтов с правом инвайта: {len(eligible)} из {len(account_ids)}{warn}\n\n"
+        "Жми «Подтвердить» — кампания создаётся и стартует.",
+        reply_markup=confirm_kb("camp:start"),
+    )
+
+
 @router.callback_query(NewCampaign.waiting_confirm, F.data == "camp:start")
 async def on_campaign_start(query: CallbackQuery, state: FSMContext) -> None:
     if query.from_user is None:
         return
     data = await state.get_data()
     usernames = data.get("usernames") or []
-    template_id = data.get("template_id")
+    ctype_val = data.get("campaign_type")
     resend_old = bool(data.get("resend_old"))
 
-    if not usernames or not template_id:
+    if not usernames or ctype_val is None:
         await query.answer("Сессия пустая, начните заново", show_alert=True)
         await state.clear()
         return
 
+    is_invite = ctype_val == CampaignType.invite.value
+    if is_invite:
+        target_chat = data.get("target_chat")
+        target_chat_id = data.get("target_chat_id")
+        if not target_chat or target_chat_id is None:
+            await query.answer("Не задан целевой чат, начните заново", show_alert=True)
+            await state.clear()
+            return
+    else:
+        template_id = data.get("template_id")
+        if not template_id:
+            await query.answer("Сессия пустая, начните заново", show_alert=True)
+            await state.clear()
+            return
+
     # 1. Создаём campaign.
     async with session_scope() as session:
-        campaign = await campaigns_repo.create_campaign(
-            session,
-            type_=CampaignType.message,
-            template_id=template_id,
-            resend_old=resend_old,
-            created_by_user_id=query.from_user.id,
-        )
+        if is_invite:
+            campaign = await campaigns_repo.create_campaign(
+                session,
+                type_=CampaignType.invite,
+                target_chat=target_chat,
+                target_chat_id=target_chat_id,
+                resend_old=resend_old,
+                created_by_user_id=query.from_user.id,
+            )
+        else:
+            campaign = await campaigns_repo.create_campaign(
+                session,
+                type_=CampaignType.message,
+                template_id=template_id,
+                resend_old=resend_old,
+                created_by_user_id=query.from_user.id,
+            )
         campaign_id = campaign.id
 
     # 2. Заполняем tasks с дедупом.
@@ -263,13 +392,14 @@ async def on_campaign_start(query: CallbackQuery, state: FSMContext) -> None:
         campaign_id=campaign_id, usernames=usernames
     )
 
-    # 3. Стартуем worker.
+    # 3. Стартуем (долгоживущий WorkerPool сам подберёт задачи).
     ok, msg = await campaign_manager.start_campaign(campaign_id)
 
     await state.clear()
     if query.message is not None:
+        kind = "инвайт" if is_invite else "рассылка"
         text = (
-            f"<b>Кампания #{campaign_id} создана:</b>\n"
+            f"<b>Кампания #{campaign_id} ({kind}) создана:</b>\n"
             f"• Задач в работу: {created}\n"
             f"• Уже обработано ранее (пропущено): {skipped}\n"
         )

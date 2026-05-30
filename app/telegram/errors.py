@@ -20,8 +20,9 @@ from telethon.errors import (
     FloodWaitError,
     InputUserDeactivatedError,
     PeerFloodError,
+    UnauthorizedError,
+    UserAlreadyParticipantError,
     UserBannedInChannelError,
-    UserDeactivatedError,
     UserIsBlockedError,
     UserIsBotError,
     UsernameInvalidError,
@@ -42,17 +43,40 @@ ERROR_MAP: dict[type[Exception], tuple[ResultCode, str]] = {
     UserNotMutualContactError: (ResultCode.not_mutual_contact, "skip"),
     UsernameInvalidError: (ResultCode.not_found, "skip"),
     UsernameNotOccupiedError: (ResultCode.not_found, "skip"),
-    UserDeactivatedError: (ResultCode.deactivated, "skip"),
+    # UserDeactivatedError НЕ здесь: это 401 «наш аккаунт удалён/забанен»
+    # (подкласс UnauthorizedError) → SESSION_DEAD_ERRORS, обрабатывается как
+    # session-dead в воркере/spam-check (§16, MVP-6). Здесь только
+    # InputUserDeactivatedError (код 400) — удалён ПОЛУЧАТЕЛЬ → корректный skip.
     InputUserDeactivatedError: (ResultCode.deactivated, "skip"),
     UserBannedInChannelError: (ResultCode.banned_in_channel, "skip"),
     UserIsBlockedError: (ResultCode.privacy_restricted, "skip"),
     UserIsBotError: (ResultCode.not_found, "skip"),
     ChatWriteForbiddenError: (ResultCode.privacy_restricted, "skip"),
     UsersTooMuchError: (ResultCode.too_many_channels, "skip"),
+    # invite: получатель уже в чате (§16.1).
+    UserAlreadyParticipantError: (ResultCode.already_member, "skip"),
     # invite-fatal — кампания целевой группы не может ехать дальше:
     ChannelPrivateError: (ResultCode.channel_private, "fatal"),
     ChatAdminRequiredError: (ResultCode.channel_private, "fatal"),
 }
+
+# Ошибки, означающие «ИМЕННО ЭТОТ аккаунт не может инвайтить в ЭТОТ чат»
+# (не состоит в чате / нет права приглашать). В отличие от message-пути, где
+# они fatal для всей кампании (целевой чат недоступен в принципе), в invite-пути
+# воркер обрабатывает их per-account: помечает себя непригодным для кампании и
+# возвращает задачу в очередь для другого аккаунта (ARCHITECTURE.md §5.3, §16.1).
+# Кампания паузится только когда инвайтить не может НИ ОДИН аккаунт.
+ACCOUNT_SCOPED_INVITE_ERRORS: tuple[type[Exception], ...] = (
+    ChatAdminRequiredError,
+    ChannelPrivateError,
+)
+
+# Ошибки уровня 401 «наша сессия/аккаунт недействительны»: ключ аннулирован,
+# сессия отозвана/истекла, аккаунт деактивирован/забанен. В рантайме (действия,
+# spam-check) означают, что аккаунт нужно перевести в dead и остановить воркер —
+# а не молча ретраить. UnauthorizedError — базовый класс всех 401 в Telethon
+# (включая AuthKeyUnregisteredError «The key is not registered in the system»).
+SESSION_DEAD_ERRORS: tuple[type[Exception], ...] = (UnauthorizedError,)
 
 
 class RetryableError(Exception):
@@ -90,6 +114,11 @@ async def safe_telegram_action(coro: Awaitable) -> TaskOutcome | None:
         await coro
         return None
     except (FloodWaitError, PeerFloodError):
+        raise
+    except SESSION_DEAD_ERRORS:
+        # 401 «наша сессия/аккаунт мертвы» — спецлогика session-dead в worker
+        # (set_dead + стоп воркера). Не глушим в skip и не превращаем в
+        # «неизвестную» ошибку (§16, MVP-6).
         raise
     except tuple(ERROR_MAP.keys()) as e:
         result_code, severity = ERROR_MAP[type(e)]
