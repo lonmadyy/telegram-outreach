@@ -1,6 +1,8 @@
-"""Хендлеры аккаунтов: /accounts, /add_account FSM. ARCHITECTURE.md §10.2, §10.3."""
+"""Хендлеры аккаунтов: /accounts, /add_account FSM, /remove_account. ARCHITECTURE.md §10.2, §10.3."""
 
 from __future__ import annotations
+
+import os
 
 from aiogram import F, Router
 from aiogram.filters import Command
@@ -8,9 +10,10 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 from loguru import logger
 
-from app.bot.keyboards import cancel_kb, main_menu
+from app.bot.keyboards import cancel_kb, confirm_kb, main_menu
 from app.bot.states import AddAccount
 from app.config import settings
+from app.db.models import AccountStatus
 from app.db.repositories import accounts as accounts_repo
 from app.db.repositories import logs as logs_repo
 from app.db.session import session_scope
@@ -27,7 +30,14 @@ from app.telegram.auth import (
     submit_code,
     submit_password,
 )
-from app.telegram.client_factory import normalize_phone, parse_proxy, session_path_for
+from app.telegram.client_factory import (
+    create_client,
+    normalize_phone,
+    parse_account_ref,
+    parse_proxy,
+    session_file_paths,
+    session_path_for,
+)
 from app.telegram import warmup as warmup_mod
 from app.telegram.worker_pool import worker_pool
 from app.scheduler.jobs import get_scheduler
@@ -56,7 +66,15 @@ def _format_account_row(acc) -> str:
 @router.callback_query(F.data == "menu:accounts")
 async def list_accounts(event) -> None:
     async with session_scope() as session:
-        items = await accounts_repo.list_accounts(session)
+        all_items = await accounts_repo.list_accounts(session)
+
+    # Отключённые (disabled, «удалённые») скрываем из основного списка (§10.2),
+    # показываем лишь счётчиком для прозрачности.
+    items = [a for a in all_items if a.status != AccountStatus.disabled]
+    disabled_count = len(all_items) - len(items)
+    disabled_note = (
+        f"\n\n<i>+{disabled_count} отключённых (disabled)</i>" if disabled_count else ""
+    )
 
     if isinstance(event, CallbackQuery):
         target = event.message
@@ -69,13 +87,13 @@ async def list_accounts(event) -> None:
 
     if not items:
         await target.answer(
-            "Аккаунтов пока нет. Добавьте через /add_account.",
+            "Активных аккаунтов нет. Добавьте через /add_account." + disabled_note,
             reply_markup=main_menu(),
         )
         return
 
     text = "<b>Аккаунты:</b>\n\n" + "\n".join(_format_account_row(a) for a in items)
-    await target.answer(text, reply_markup=main_menu())
+    await target.answer(text + disabled_note, reply_markup=main_menu())
 
 
 @router.message(Command("add_account"))
@@ -329,3 +347,149 @@ async def on_proxy(message: Message, state: FSMContext) -> None:
         f"Подписан на каналов: {joined} | {start_note}.",
         reply_markup=main_menu(),
     )
+
+
+# ---------------------------------------------------------------------------
+# /remove_account — мягкое удаление аккаунта (§10.2). Деструктивно → подтверждение.
+# ---------------------------------------------------------------------------
+
+
+@router.message(Command("remove_account"))
+async def cmd_remove_account(message: Message) -> None:
+    if message.text is None:
+        return
+    parts = message.text.split(maxsplit=1)
+    ref = parse_account_ref(parts[1]) if len(parts) > 1 else None
+    if ref is None:
+        await message.answer(
+            "Использование: <code>/remove_account &lt;phone|id&gt;</code>\n"
+            "Например: <code>/remove_account +77788786614</code> или "
+            "<code>/remove_account 3</code>",
+            reply_markup=main_menu(),
+        )
+        return
+
+    kind, val = ref
+    async with session_scope() as session:
+        if kind == "id":
+            acc = await accounts_repo.get_by_id(session, int(val))
+        else:
+            acc = await accounts_repo.get_by_phone(session, str(val))
+
+    if acc is None:
+        await message.answer(f"Аккаунт <code>{val}</code> не найден.", reply_markup=main_menu())
+        return
+    if acc.status == AccountStatus.disabled:
+        await message.answer(
+            f"Аккаунт {acc.phone} (id={acc.id}) уже отключён (disabled).",
+            reply_markup=main_menu(),
+        )
+        return
+
+    await message.answer(
+        f"Удалить аккаунт?\n"
+        f"<b>{acc.phone}</b> | id={acc.id} | status={acc.status.value}\n\n"
+        f"Воркер будет остановлен, сессия разлогинена в Telegram, файл .session удалён. "
+        f"История кампаний и дедуп сохранятся (статус → <b>disabled</b>).",
+        reply_markup=confirm_kb(f"rmacc:do:{acc.id}"),
+    )
+
+
+@router.callback_query(F.data.startswith("rmacc:do:"))
+async def on_remove_confirm(query: CallbackQuery) -> None:
+    raw = (query.data or "").removeprefix("rmacc:do:")
+    try:
+        account_id = int(raw)
+    except ValueError:
+        await query.answer("Битый id", show_alert=True)
+        return
+
+    async with session_scope() as session:
+        acc = await accounts_repo.get_by_id(session, account_id)
+    if acc is None:
+        await query.answer("Аккаунт не найден", show_alert=True)
+        if query.message is not None:
+            await query.message.answer(
+                "Аккаунт не найден или уже удалён.", reply_markup=main_menu()
+            )
+        return
+
+    phone = acc.phone
+    proxy_url = acc.proxy_url
+    result = await _remove_account_fully(account_id, phone, proxy_url)
+
+    if query.message is not None:
+        await query.message.answer(
+            f"Аккаунт <b>{phone}</b> (id={account_id}) отключён.\n{result}",
+            reply_markup=main_menu(),
+        )
+    await query.answer("Готово")
+
+
+async def _remove_account_fully(
+    account_id: int, phone: str, proxy_url: str | None
+) -> str:
+    """Оркестрация мягкого удаления (§10.2): стоп воркера → снятие spamcheck →
+    log_out + удаление .session → статус disabled. Каждый внешний шаг best-effort:
+    сбой одного (напр. log_out для dead-аккаунта) не должен срывать остальные."""
+    notes: list[str] = []
+
+    # 1. Остановить воркер (освобождает .session-файл перед log_out).
+    try:
+        await worker_pool.stop_for(account_id)
+        notes.append("воркер остановлен")
+    except Exception:
+        logger.exception("remove: stop_for failed for {}", account_id)
+
+    # 2. Снять spamcheck-задачу из планировщика.
+    try:
+        sched = get_scheduler()
+        if sched is not None:
+            sched.remove_spamcheck_for_account(account_id)
+            notes.append("spamcheck снят")
+    except Exception:
+        logger.exception("remove: remove_spamcheck failed for {}", account_id)
+
+    # 3. Log out в Telegram + удаление .session (временный клиент, best-effort).
+    logged_out = False
+    try:
+        client = create_client(phone=phone, proxy_url=proxy_url)
+        try:
+            await client.connect()
+            if await client.is_user_authorized():
+                await client.log_out()  # серверный logout + удаляет .session-файл
+                logged_out = True
+        finally:
+            try:
+                if client.is_connected():
+                    await client.disconnect()
+            except Exception:
+                pass
+    except Exception:
+        logger.exception("remove: log_out failed for {}", phone)
+    notes.append("сессия разлогинена" if logged_out else "разлогин пропущен (best-effort)")
+
+    # 4. Подчистить оставшиеся файлы сессии (если log_out не удалил).
+    removed_files = 0
+    for path in session_file_paths(settings.sessions_path, phone):
+        try:
+            if os.path.exists(path):
+                os.remove(path)
+                removed_files += 1
+        except Exception:
+            logger.exception("remove: unlink {} failed", path)
+    if removed_files:
+        notes.append(".session удалён")
+
+    # 5. Статус disabled + лог (запись остаётся — FK/история целы).
+    async with session_scope() as session:
+        await accounts_repo.set_disabled(session, account_id=account_id)
+        await logs_repo.log_event(
+            session,
+            level="info",
+            event_type="account_disabled",
+            account_id=account_id,
+            message=f"Аккаунт {phone} отключён через /remove_account",
+            payload={"logged_out": logged_out, "removed_files": removed_files},
+        )
+    return " · ".join(notes)

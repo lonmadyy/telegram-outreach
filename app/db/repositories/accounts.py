@@ -148,6 +148,17 @@ async def set_active(session: AsyncSession, *, account_id: int) -> None:
     )
 
 
+async def set_disabled(session: AsyncSession, *, account_id: int) -> None:
+    """Мягкое удаление (§10.2): аккаунт отключён — воркер сам остановится, аккаунт
+    исключён из пула воркеров и spamcheck. Запись и история (кампании, дедуп)
+    сохраняются; операция обратима повторной авторизацией через /add_account."""
+    await session.execute(
+        update(Account)
+        .where(Account.id == account_id)
+        .values(status=AccountStatus.disabled, spam_unlock_at=None)
+    )
+
+
 # ---------------------------------------------------------------------------
 # Лимиты и счётчики. §5.1 «Дневные лимиты», §6.5.
 # ---------------------------------------------------------------------------

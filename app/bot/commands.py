@@ -15,6 +15,7 @@ BOT_COMMANDS: list[BotCommand] = [
     BotCommand(command="status", description="Статус кампаний и аккаунтов"),
     BotCommand(command="accounts", description="Список аккаунтов"),
     BotCommand(command="add_account", description="Добавить userbot-аккаунт"),
+    BotCommand(command="remove_account", description="Удалить аккаунт (phone|id)"),
     BotCommand(command="templates", description="Шаблоны сообщений"),
     BotCommand(command="new_template", description="Создать шаблон"),
     BotCommand(command="new_campaign", description="Новая кампания (рассылка/инвайт)"),

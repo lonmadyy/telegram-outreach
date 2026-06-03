@@ -40,6 +40,38 @@ def session_path_for(phone: str) -> str:
     return str(Path(settings.sessions_path) / digits)
 
 
+def session_file_paths(sessions_path: str, phone: str) -> list[str]:
+    """Пути к файлам сессии Telethon для телефона: `.session` и `.session-journal`.
+
+    Чистая функция (для удаления файлов при /remove_account). Имя — цифры телефона,
+    как в `session_path_for`.
+    """
+    digits = _NON_DIGIT.sub("", phone or "")
+    base = Path(sessions_path) / digits
+    return [f"{base}.session", f"{base}.session-journal"]
+
+
+def parse_account_ref(arg: str | None) -> tuple[str, str | int] | None:
+    """Разбор аргумента команды (`/remove_account`): телефон или числовой id.
+
+    `+номер` или длинные цифры (>= 7) → `("phone", нормализованный_телефон)`;
+    короткие цифры (< 7) → `("id", int)`; пусто/мусор → `None`. Чистая функция.
+    """
+    if not arg:
+        return None
+    a = arg.strip().lstrip("@")
+    if not a:
+        return None
+    if a.startswith("+"):
+        phone = normalize_phone(a)
+        return ("phone", phone) if len(phone) >= 8 else None
+    if a.isdigit():
+        if len(a) < 7:
+            return ("id", int(a))
+        return ("phone", normalize_phone(a))
+    return None
+
+
 def parse_proxy(proxy_url: str | None) -> dict | None:
     """`socks5://user:pass@host:port` -> dict для Telethon (python-socks).
 
