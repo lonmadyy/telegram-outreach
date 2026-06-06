@@ -6,12 +6,32 @@
 
 from __future__ import annotations
 
+import logging
 import sys
 from pathlib import Path
 
 from loguru import logger
 
 from app.config import settings
+
+
+class _InterceptHandler(logging.Handler):
+    """Перенаправляет стандартный `logging` (aiogram, asyncpg, sqlalchemy, alembic,
+    apscheduler) в loguru — чтобы их ошибки/трейсбеки были видны в общих логах,
+    а не терялись (раньше исключения хэндлеров aiogram уходили «в никуда»)."""
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            level: str | int = logger.level(record.levelname).name
+        except ValueError:
+            level = record.levelno
+        frame, depth = logging.currentframe(), 2
+        while frame is not None and frame.f_code.co_filename == logging.__file__:
+            frame = frame.f_back
+            depth += 1
+        logger.opt(depth=depth, exception=record.exc_info).log(
+            level, record.getMessage()
+        )
 
 
 def setup_logging() -> None:
@@ -40,3 +60,11 @@ def setup_logging() -> None:
         serialize=False,
         encoding="utf-8",
     )
+
+    # Перехват стандартного logging → loguru: ошибки/трейсбеки aiogram, asyncpg,
+    # sqlalchemy, alembic, apscheduler теперь видны в общих логах (а не теряются).
+    logging.basicConfig(handlers=[_InterceptHandler()], level=logging.INFO, force=True)
+    for _name in ("aiogram", "asyncpg", "sqlalchemy.engine", "alembic", "apscheduler"):
+        _std = logging.getLogger(_name)
+        _std.handlers = [_InterceptHandler()]
+        _std.propagate = False
