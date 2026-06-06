@@ -26,6 +26,14 @@ def get_engine() -> AsyncEngine:
             pool_pre_ping=True,
             pool_size=10,
             max_overflow=10,
+            # Надёжность при сетевых сбоях / долгом аптайме: соединения не должны
+            # «виснуть» вечно на полуоткрытом TCP (см. инцидент с зависшим app).
+            pool_recycle=1800,  # переоткрывать соединение старше 30 мин
+            pool_timeout=30,    # не ждать свободное соединение из пула дольше 30с
+            connect_args={
+                "command_timeout": 30,  # asyncpg: запрос не виснет дольше 30с
+                "timeout": 15,          # asyncpg: таймаут установки соединения
+            },
         )
     return _engine
 
