@@ -227,6 +227,12 @@ async def spam_check(*, account_id: int, client: TelegramClient) -> None:
                 parsed=parsed,
             )
 
+        # no_limits снимает ограничение ВСЕГДА (даже без смены статуса, §6.5):
+        # SpamBot стабильно отвечает no_limits — это не «событие смены», но если
+        # аккаунт ограничен (напр. pause после quiet-hours), его надо вернуть в active.
+        if parsed.status == "no_limits":
+            await _ensure_active_on_no_limits(session, account_id)
+
 
 async def _react_to_change(
     *,
@@ -296,34 +302,8 @@ async def _react_to_change(
         )
         return
 
-    if parsed.status == "no_limits" and prev_status in (
-        "temporary",
-        "soft_warning",
-        None,
-    ):
-        # Для соответствия таблице §7.4 строка "temporary/spam_blocked → no_limits"
-        # сравниваем с предыдущим parsed_status. None — впервые опрашиваем.
-        # И если в БД сейчас pause/spam_blocked/limit_reduced — освобождаем.
-        if (
-            account.status.value in ("pause", "spam_blocked")
-            or account.spam_unlock_at is not None
-            or account.limit_reduced_until is not None
-        ):
-            await accounts_repo.set_active_no_limits(
-                session, account_id=account_id
-            )
-            await logs_repo.log_event(
-                session,
-                level="info",
-                event_type="limit_restored",
-                account_id=account_id,
-                message="SpamBot: no_limits → аккаунт возвращён в active",
-            )
-            await notify_admin(
-                f"✓ Аккаунт {account.phone}: SpamBot подтвердил отсутствие "
-                f"ограничений, лимит восстановлен."
-            )
-        return
+    # no_limits обрабатывается отдельно в _ensure_active_on_no_limits (§6.5) —
+    # ВСЕГДА при ответе no_limits, а не только при смене статуса. Здесь не дублируем.
 
     if parsed.status == "soft_warning":
         await logs_repo.log_event(
@@ -343,6 +323,30 @@ async def _react_to_change(
             account_id=account_id,
             message="SpamBot ответил нераспознанным текстом, см. raw_response",
         )
+
+
+async def _ensure_active_on_no_limits(session, account_id: int) -> None:
+    """§6.5: при ответе SpamBot `no_limits` снять любое действующее ограничение и
+    вернуть аккаунт в active — НЕЗАВИСИМО от того, сменился ли распознанный статус
+    (SpamBot стабильно отвечает no_limits, поэтому «по смене» это не срабатывало).
+
+    Идемпотентно: если аккаунт не ограничен (`is_restricted` False) — тихо выходим,
+    поэтому уведомление шлётся один раз, при фактическом восстановлении."""
+    account: Account | None = await accounts_repo.get_by_id(session, account_id)
+    if account is None or not accounts_repo.is_restricted(account):
+        return
+    await accounts_repo.set_active_no_limits(session, account_id=account_id)
+    await logs_repo.log_event(
+        session,
+        level="info",
+        event_type="limit_restored",
+        account_id=account_id,
+        message="SpamBot: no_limits → аккаунт возвращён в active",
+    )
+    await notify_admin(
+        f"✓ Аккаунт {account.phone}: SpamBot подтвердил отсутствие ограничений, "
+        f"лимит восстановлен."
+    )
 
 
 async def _mark_account_dead(account_id: int, reason: str) -> None:

@@ -178,6 +178,32 @@ def is_limit_reduced(account: Account, *, now: datetime | None = None) -> bool:
     return account.limit_reduced_until > now
 
 
+def is_pause_expired(account: Account, *, now: datetime | None = None) -> bool:
+    """Пауза истекла: статус `pause` и `spam_unlock_at` в прошлом/отсутствует.
+
+    Покрывает quiet-hours и истёкший FloodWait (§5.3, §6.3): воркер должен вернуть
+    такой аккаунт в `active`. `spam_blocked` НЕ трогаем — его снимает только
+    подтверждение SpamBot `no_limits` (§6.5)."""
+    if account.status != AccountStatus.pause:
+        return False
+    if account.spam_unlock_at is None:
+        return True
+    now = now or datetime.now(timezone.utc)
+    return account.spam_unlock_at <= now
+
+
+def is_restricted(account: Account, *, now: datetime | None = None) -> bool:
+    """Есть ли на аккаунте действующее ограничение (для возврата по `no_limits`, §6.5):
+    статус `pause`/`spam_blocked`, либо заданный `spam_unlock_at`, либо снижение лимита."""
+    if account.status in (AccountStatus.pause, AccountStatus.spam_blocked):
+        return True
+    if account.spam_unlock_at is not None:
+        return True
+    if account.limit_reduced_until is not None:
+        return True
+    return False
+
+
 def effective_daily_limits(
     account: Account,
     *,

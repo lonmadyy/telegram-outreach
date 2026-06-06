@@ -302,6 +302,22 @@ class WorkerAccount:
                 )
             account.status = AccountStatus.active  # локально, чтобы не перечитывать
 
+        # 1c. Истёкшая пауза (quiet-hours / FloodWait) → active (§5.3, §6.3, §6.5).
+        # Возвращаем статус, когда пауза прошла. spam_blocked и активные паузы
+        # (FloodWait со spam_unlock в будущем) НЕ трогаем — их снимает таймер/SpamBot.
+        if accounts_repo.is_pause_expired(account):
+            async with session_scope() as session:
+                await accounts_repo.set_active(session, account_id=self.account_id)
+                await logs_repo.log_event(
+                    session,
+                    level="info",
+                    event_type="account_reactivated",
+                    account_id=self.account_id,
+                    message="Пауза истекла, аккаунт возвращён в active",
+                )
+            account.status = AccountStatus.active  # локально
+            account.spam_unlock_at = None
+
         # 2. Quiet hours.
         quiet_start, quiet_end, tz_name = _quiet_settings()
         if is_in_quiet_hours(

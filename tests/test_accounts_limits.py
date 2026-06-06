@@ -12,6 +12,8 @@ from app.db.repositories.accounts import (
     effective_daily_limits,
     is_in_warmup,
     is_limit_reduced,
+    is_pause_expired,
+    is_restricted,
     warmup_age_limits,
 )
 
@@ -29,6 +31,7 @@ def make_account(
     daily_sent: int = 0,
     daily_invited: int = 0,
     status: AccountStatus = AccountStatus.active,
+    spam_unlock_at: datetime | None = None,
 ) -> Account:
     now = datetime.now(timezone.utc)
     acc = Account()
@@ -41,6 +44,7 @@ def make_account(
     acc.daily_invited = daily_invited
     acc.warmup_until = (now + timedelta(hours=48 - hours_old)) if in_warmup else None
     acc.limit_reduced_until = (now + timedelta(days=7)) if reduced else None
+    acc.spam_unlock_at = spam_unlock_at
     return acc
 
 
@@ -190,3 +194,67 @@ def test_can_send_after_peerflood_uses_75_percent() -> None:
         dm_warm=DM_WARM, invite_warm=INVITE_WARM,
         dm_fresh=DM_FRESH, invite_fresh=INVITE_FRESH,
     )
+
+
+# --- is_pause_expired (возврат active после истёкшей паузы) ---
+
+
+def test_pause_expired_past_unlock_true() -> None:
+    now = datetime.now(timezone.utc)
+    acc = make_account(
+        status=AccountStatus.pause, spam_unlock_at=now - timedelta(hours=1)
+    )
+    assert is_pause_expired(acc) is True
+
+
+def test_pause_expired_none_unlock_true() -> None:
+    acc = make_account(status=AccountStatus.pause, spam_unlock_at=None)
+    assert is_pause_expired(acc) is True
+
+
+def test_pause_future_unlock_false() -> None:
+    now = datetime.now(timezone.utc)
+    acc = make_account(
+        status=AccountStatus.pause, spam_unlock_at=now + timedelta(hours=1)
+    )
+    assert is_pause_expired(acc) is False
+
+
+def test_pause_expired_active_status_false() -> None:
+    assert is_pause_expired(make_account(status=AccountStatus.active)) is False
+
+
+def test_pause_expired_spam_blocked_false() -> None:
+    # spam_blocked не снимаем по таймеру даже с истёкшим unlock (только SpamBot §6.5).
+    now = datetime.now(timezone.utc)
+    acc = make_account(
+        status=AccountStatus.spam_blocked, spam_unlock_at=now - timedelta(hours=1)
+    )
+    assert is_pause_expired(acc) is False
+
+
+# --- is_restricted (есть ли действующее ограничение) ---
+
+
+def test_restricted_pause_true() -> None:
+    assert is_restricted(make_account(status=AccountStatus.pause)) is True
+
+
+def test_restricted_spam_blocked_true() -> None:
+    assert is_restricted(make_account(status=AccountStatus.spam_blocked)) is True
+
+
+def test_restricted_active_clean_false() -> None:
+    assert is_restricted(make_account(status=AccountStatus.active)) is False
+
+
+def test_restricted_active_with_unlock_true() -> None:
+    now = datetime.now(timezone.utc)
+    acc = make_account(
+        status=AccountStatus.active, spam_unlock_at=now + timedelta(hours=1)
+    )
+    assert is_restricted(acc) is True
+
+
+def test_restricted_active_with_reduced_true() -> None:
+    assert is_restricted(make_account(status=AccountStatus.active, reduced=True)) is True
