@@ -341,6 +341,7 @@ async def on_target_chat(message: Message, state: FSMContext) -> None:
 async def on_campaign_start(query: CallbackQuery, state: FSMContext) -> None:
     if query.from_user is None:
         return
+    logger.info("camp_start: handler invoked by user {}", query.from_user.id)
     data = await state.get_data()
     usernames = data.get("usernames") or []
     ctype_val = data.get("campaign_type")
@@ -387,13 +388,23 @@ async def on_campaign_start(query: CallbackQuery, state: FSMContext) -> None:
             )
         campaign_id = campaign.id
 
+    logger.info(
+        "camp_start: campaign #{} created (invite={}) usernames={} target={}",
+        campaign_id, is_invite, len(usernames), data.get("target_chat_id"),
+    )
+
     # 2. Заполняем tasks с дедупом.
     created, skipped = await campaign_manager.create_tasks_for_campaign(
         campaign_id=campaign_id, usernames=usernames
     )
+    logger.info(
+        "camp_start: campaign #{} tasks created={} skipped={}",
+        campaign_id, created, skipped,
+    )
 
     # 3. Стартуем (долгоживущий WorkerPool сам подберёт задачи).
     ok, msg = await campaign_manager.start_campaign(campaign_id)
+    logger.info("camp_start: campaign #{} start ok={} msg={}", campaign_id, ok, msg)
 
     await state.clear()
     if query.message is not None:
