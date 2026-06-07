@@ -16,6 +16,11 @@ from app.db.models import ProcessedClient, ResultCode
 
 PROCESSED_CUTOFF_DAYS = 180
 
+# Размер чанка для запросов с большим списком usernames. PostgreSQL/asyncpg не
+# принимают больше ~65535 параметров на один запрос, поэтому большие списки
+# (например 120k из TXT) бьём на части (§9.1).
+_USERNAMES_CHUNK = 5000
+
 
 async def already_processed_usernames(
     session: AsyncSession, *, usernames: list[str], resend_old: bool
@@ -25,19 +30,27 @@ async def already_processed_usernames(
     Логика из §4.6 «Логика проверки» / §9.1 п.2:
       - resend_old=False: пропускаем ВСЕХ, кто обрабатывался когда-либо.
       - resend_old=True:  пропускаем только обработанных за последние 180 дней.
+
+    Большой список бьётся на чанки, чтобы не превысить лимит параметров запроса.
     """
     if not usernames:
         return set()
 
-    stmt = select(ProcessedClient.username).where(
-        ProcessedClient.username.in_(usernames)
-    )
+    cutoff = None
     if resend_old:
         cutoff = datetime.now(timezone.utc) - timedelta(days=PROCESSED_CUTOFF_DAYS)
-        stmt = stmt.where(ProcessedClient.last_processed_at >= cutoff)
 
-    result = await session.execute(stmt)
-    return {row[0] for row in result.all()}
+    skip: set[str] = set()
+    for i in range(0, len(usernames), _USERNAMES_CHUNK):
+        chunk = usernames[i : i + _USERNAMES_CHUNK]
+        stmt = select(ProcessedClient.username).where(
+            ProcessedClient.username.in_(chunk)
+        )
+        if cutoff is not None:
+            stmt = stmt.where(ProcessedClient.last_processed_at >= cutoff)
+        result = await session.execute(stmt)
+        skip.update(row[0] for row in result.all())
+    return skip
 
 
 async def register_processed(

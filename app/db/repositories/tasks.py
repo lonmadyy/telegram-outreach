@@ -17,18 +17,28 @@ from app.db.models import CampaignType, ResultCode, Task, TaskStatus
 _ALL_CAMPAIGN_TYPES = [t.value for t in CampaignType]
 
 
+# Размер чанка bulk insert: один запрос не должен превышать лимит параметров
+# PostgreSQL/asyncpg (~65535). Большие списки (напр. 120k из TXT) вставляем частями.
+_BULK_INSERT_CHUNK = 5000
+
+
 async def bulk_create(
     session: AsyncSession, *, campaign_id: int, usernames: list[str]
 ) -> int:
-    """Bulk insert новых задач для кампании. Дубли по (campaign_id, username) — пропускаются."""
+    """Bulk insert новых задач для кампании. Дубли по (campaign_id, username)
+    пропускаются. Большой список вставляется чанками (лимит параметров запроса)."""
     if not usernames:
         return 0
-    stmt = insert(Task).values(
-        [{"campaign_id": campaign_id, "username": u} for u in usernames]
-    )
-    stmt = stmt.on_conflict_do_nothing(index_elements=["campaign_id", "username"])
-    result = await session.execute(stmt)
-    return result.rowcount or 0
+    total = 0
+    for i in range(0, len(usernames), _BULK_INSERT_CHUNK):
+        chunk = usernames[i : i + _BULK_INSERT_CHUNK]
+        stmt = insert(Task).values(
+            [{"campaign_id": campaign_id, "username": u} for u in chunk]
+        )
+        stmt = stmt.on_conflict_do_nothing(index_elements=["campaign_id", "username"])
+        result = await session.execute(stmt)
+        total += result.rowcount or 0
+    return total
 
 
 async def get_next_queued(
