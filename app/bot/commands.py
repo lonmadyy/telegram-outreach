@@ -21,6 +21,7 @@ BOT_COMMANDS: list[BotCommand] = [
     BotCommand(command="new_campaign", description="Новая кампания (рассылка/инвайт)"),
     BotCommand(command="campaigns", description="Список кампаний"),
     BotCommand(command="spamcheck", description="Проверка через SpamBot"),
+    BotCommand(command="floodwait", description="Аккаунты в FloodWait"),
     BotCommand(command="export_report", description="CSV-отчёт по кампании"),
     BotCommand(command="export_log", description="Выгрузить логи"),
     BotCommand(command="settings", description="Настройки"),

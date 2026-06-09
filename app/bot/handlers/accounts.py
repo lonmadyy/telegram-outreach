@@ -57,6 +57,8 @@ def _format_account_row(acc) -> str:
         parts.append(f"warmup_until={acc.warmup_until:%Y-%m-%d %H:%M}")
     if acc.proxy_url:
         parts.append("proxy=yes")
+    if acc.status == AccountStatus.pause and acc.pause_reason:
+        parts.append(f"pause:{acc.pause_reason}")
     if acc.spam_unlock_at:
         parts.append(f"unlock_at={acc.spam_unlock_at:%Y-%m-%d %H:%M}")
     return " | ".join(parts)

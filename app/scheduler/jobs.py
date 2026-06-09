@@ -225,7 +225,7 @@ class SchedulerService:
                     tz_name=tz_name,
                 )
                 await accounts_repo.set_pause(
-                    session, account_id=account.id, unlock_at=wake_at
+                    session, account_id=account.id, unlock_at=wake_at, reason="quiet_hours"
                 )
             await logs_repo.log_event(
                 session,

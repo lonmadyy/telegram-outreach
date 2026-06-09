@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Log, LogLevel
@@ -66,3 +66,19 @@ async def exists_peer_flood_since(
         .limit(1)
     )
     return result.first() is not None
+
+
+async def flood_wait_counts_since(
+    session: AsyncSession, *, since: datetime
+) -> dict[int, int]:
+    """Сколько событий `flood_wait` у каждого аккаунта начиная с `since`
+    (для /floodwait и сводки /status): {account_id: count}. Read-only по таблице
+    logs — без отдельного поля-счётчика в accounts (§10.2)."""
+    result = await session.execute(
+        select(Log.account_id, func.count())
+        .where(Log.event_type == "flood_wait")
+        .where(Log.ts >= since)
+        .where(Log.account_id.is_not(None))
+        .group_by(Log.account_id)
+    )
+    return {row[0]: row[1] for row in result.all()}

@@ -876,7 +876,10 @@ class WorkerAccount:
                 session, task_id=task_id, delay_seconds=seconds
             )
             await accounts_repo.set_pause(
-                session, account_id=self.account_id, unlock_at=unlock_at
+                session,
+                account_id=self.account_id,
+                unlock_at=unlock_at,
+                reason="flood_wait",
             )
             await logs_repo.log_event(
                 session,

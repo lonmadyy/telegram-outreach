@@ -6,18 +6,19 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from aiogram import F, Router
 from aiogram.filters import Command
-from aiogram.types import Message
+from aiogram.types import CallbackQuery, Message
 from loguru import logger
 from sqlalchemy import select
 
 from app.bot.keyboards import main_menu
-from app.db.models import Account, CampaignStatus
+from app.db.models import Account, AccountStatus, CampaignStatus
 from app.db.repositories import accounts as accounts_repo
 from app.db.repositories import campaigns as campaigns_repo
+from app.db.repositories import logs as logs_repo
 from app.db.repositories import spam_check as spam_check_repo
 from app.db.session import session_scope
 
@@ -25,16 +26,23 @@ router = Router(name="status")
 
 
 def _fmt_account_brief(acc: Account, last_check: str | None) -> str:
+    now = datetime.now(timezone.utc)
     parts = [f"<b>{acc.phone}</b>", acc.status.value]
-    if acc.spam_unlock_at is not None and acc.spam_unlock_at > datetime.now(
-        timezone.utc
-    ):
+    # Причинная метка: FloodWait (§6.3) ≠ ночной quiet-сон (§5.3) ≠ spam-блок (§6.4).
+    if accounts_repo.is_flood_waiting(acc, now=now) and acc.spam_unlock_at is not None:
+        mins = max(0, int((acc.spam_unlock_at - now).total_seconds() // 60))
+        parts.append(f"⏳ FloodWait до {acc.spam_unlock_at:%H:%M} (ещё {mins}м)")
+    elif acc.status == AccountStatus.pause and acc.pause_reason == "quiet_hours":
+        tail = f" до {acc.spam_unlock_at:%H:%M}" if acc.spam_unlock_at else ""
+        parts.append(f"🌙 quiet{tail}")
+    elif acc.status == AccountStatus.spam_blocked and acc.spam_unlock_at is not None:
+        parts.append(f"🚫 spam до {acc.spam_unlock_at:%H:%M %d.%m}")
+    elif acc.spam_unlock_at is not None and acc.spam_unlock_at > now:
         parts.append(f"unlock {acc.spam_unlock_at:%H:%M %d.%m}")
-    if acc.limit_reduced_until is not None and acc.limit_reduced_until > datetime.now(
-        timezone.utc
-    ):
+    if acc.limit_reduced_until is not None and acc.limit_reduced_until > now:
         parts.append("75% лимит")
     parts.append(f"sent {acc.daily_sent}")
+    parts.append(f"inv {acc.daily_invited}")
     if last_check:
         parts.append(f"SB:{last_check}")
     return " | ".join(parts)
@@ -76,10 +84,65 @@ async def cmd_status(message: Message) -> None:
     if not accounts:
         lines.append("<i>нет аккаунтов</i>")
     else:
+        now = datetime.now(timezone.utc)
+        flood_now = sum(
+            1 for acc in accounts if accounts_repo.is_flood_waiting(acc, now=now)
+        )
         for acc in accounts:
             lines.append(
                 _fmt_account_brief(acc, per_account_check.get(acc.id))
             )
+        if flood_now:
+            lines.append("")
+            lines.append(f"⏳ В FloodWait сейчас: <b>{flood_now}</b> (детали — /floodwait)")
+
+    await message.answer("\n".join(lines), reply_markup=main_menu())
+
+
+# ---------------------------------------------------------------------------
+# /floodwait — кто сейчас в FloodWait + агрегат за 24ч (§6.3, §10.2)
+# ---------------------------------------------------------------------------
+
+
+@router.message(Command("floodwait"))
+@router.callback_query(F.data == "menu:floodwait")
+async def cmd_floodwait(event) -> None:
+    """Кто сейчас в FloodWait + сколько раз ловили за 24ч. Отдельно от SpamBot:
+    FloodWait — локальный rate-limit на действие, а не спам-блок (§6.3)."""
+    message = event.message if isinstance(event, CallbackQuery) else event
+    if isinstance(event, CallbackQuery):
+        await event.answer()
+    now = datetime.now(timezone.utc)
+    async with session_scope() as session:
+        result = await session.execute(select(Account).order_by(Account.id))
+        accounts = list(result.scalars().all())
+        counts = await logs_repo.flood_wait_counts_since(
+            session, since=now - timedelta(hours=24)
+        )
+
+    waiting = [a for a in accounts if accounts_repo.is_flood_waiting(a, now=now)]
+    lines = ["<b>=== FloodWait ===</b>"]
+    if not waiting:
+        lines.append("<i>Сейчас никто не в FloodWait.</i>")
+    else:
+        for a in waiting:
+            mins = (
+                max(0, int((a.spam_unlock_at - now).total_seconds() // 60))
+                if a.spam_unlock_at
+                else 0
+            )
+            lines.append(
+                f"<b>{a.phone}</b> — до {a.spam_unlock_at:%H:%M} (ещё {mins}м)"
+            )
+
+    lines.append("")
+    lines.append("<b>За 24ч (раз ловил FloodWait):</b>")
+    if not counts:
+        lines.append("<i>нет событий</i>")
+    else:
+        by_phone = {a.id: a.phone for a in accounts}
+        for acc_id, n in sorted(counts.items(), key=lambda kv: kv[1], reverse=True):
+            lines.append(f"{by_phone.get(acc_id, acc_id)}: {n}")
 
     await message.answer("\n".join(lines), reply_markup=main_menu())
 

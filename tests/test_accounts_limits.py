@@ -10,6 +10,7 @@ from app.db.models import Account, AccountStatus, CampaignType
 from app.db.repositories.accounts import (
     can_send_today,
     effective_daily_limits,
+    is_flood_waiting,
     is_in_warmup,
     is_limit_reduced,
     is_pause_expired,
@@ -32,6 +33,7 @@ def make_account(
     daily_invited: int = 0,
     status: AccountStatus = AccountStatus.active,
     spam_unlock_at: datetime | None = None,
+    pause_reason: str | None = None,
 ) -> Account:
     now = datetime.now(timezone.utc)
     acc = Account()
@@ -45,6 +47,7 @@ def make_account(
     acc.warmup_until = (now + timedelta(hours=48 - hours_old)) if in_warmup else None
     acc.limit_reduced_until = (now + timedelta(days=7)) if reduced else None
     acc.spam_unlock_at = spam_unlock_at
+    acc.pause_reason = pause_reason
     return acc
 
 
@@ -258,3 +261,50 @@ def test_restricted_active_with_unlock_true() -> None:
 
 def test_restricted_active_with_reduced_true() -> None:
     assert is_restricted(make_account(status=AccountStatus.active, reduced=True)) is True
+
+
+# --- is_flood_waiting (FloodWait-пауза отдельно от quiet/spam) ---
+
+
+def test_flood_waiting_future_unlock_true() -> None:
+    now = datetime.now(timezone.utc)
+    acc = make_account(
+        status=AccountStatus.pause,
+        pause_reason="flood_wait",
+        spam_unlock_at=now + timedelta(minutes=10),
+    )
+    assert is_flood_waiting(acc) is True
+
+
+def test_flood_waiting_quiet_pause_false() -> None:
+    # Та же status=pause, но причина quiet_hours — НЕ FloodWait.
+    now = datetime.now(timezone.utc)
+    acc = make_account(
+        status=AccountStatus.pause,
+        pause_reason="quiet_hours",
+        spam_unlock_at=now + timedelta(hours=2),
+    )
+    assert is_flood_waiting(acc) is False
+
+
+def test_flood_waiting_spam_blocked_false() -> None:
+    now = datetime.now(timezone.utc)
+    acc = make_account(
+        status=AccountStatus.spam_blocked, spam_unlock_at=now + timedelta(hours=2)
+    )
+    assert is_flood_waiting(acc) is False
+
+
+def test_flood_waiting_active_false() -> None:
+    assert is_flood_waiting(make_account(status=AccountStatus.active)) is False
+
+
+def test_flood_waiting_expired_unlock_false() -> None:
+    # Окно FloodWait истекло — больше не «в FloodWait» (воркер вернёт в active).
+    now = datetime.now(timezone.utc)
+    acc = make_account(
+        status=AccountStatus.pause,
+        pause_reason="flood_wait",
+        spam_unlock_at=now - timedelta(minutes=1),
+    )
+    assert is_flood_waiting(acc) is False

@@ -83,13 +83,23 @@ async def delete_account(session: AsyncSession, account_id: int) -> bool:
 
 
 async def set_pause(
-    session: AsyncSession, *, account_id: int, unlock_at: datetime
+    session: AsyncSession,
+    *,
+    account_id: int,
+    unlock_at: datetime,
+    reason: str = "flood_wait",
 ) -> None:
-    """FloodWait (§6.3): пауза до unlock_at, статус 'pause'."""
+    """Пауза до unlock_at, статус 'pause'. `reason` — причина для видимости
+    ('flood_wait' §6.3 / 'quiet_hours' §5.3); на снятие паузы не влияет
+    (его делает is_pause_expired по spam_unlock_at)."""
     await session.execute(
         update(Account)
         .where(Account.id == account_id)
-        .values(status=AccountStatus.pause, spam_unlock_at=unlock_at)
+        .values(
+            status=AccountStatus.pause,
+            spam_unlock_at=unlock_at,
+            pause_reason=reason,
+        )
     )
 
 
@@ -111,6 +121,7 @@ async def set_spam_blocked(
         .values(
             status=AccountStatus.spam_blocked,
             spam_unlock_at=unlock_at,
+            pause_reason=None,
             limit_reduced_until=func.coalesce(
                 Account.limit_reduced_until, limit_reduce_until
             ),
@@ -126,6 +137,7 @@ async def set_active_no_limits(session: AsyncSession, *, account_id: int) -> Non
         .values(
             status=AccountStatus.active,
             spam_unlock_at=None,
+            pause_reason=None,
             limit_reduced_until=None,
         )
     )
@@ -144,7 +156,9 @@ async def set_active(session: AsyncSession, *, account_id: int) -> None:
     await session.execute(
         update(Account)
         .where(Account.id == account_id)
-        .values(status=AccountStatus.active, spam_unlock_at=None)
+        .values(
+            status=AccountStatus.active, spam_unlock_at=None, pause_reason=None
+        )
     )
 
 
@@ -155,7 +169,9 @@ async def set_disabled(session: AsyncSession, *, account_id: int) -> None:
     await session.execute(
         update(Account)
         .where(Account.id == account_id)
-        .values(status=AccountStatus.disabled, spam_unlock_at=None)
+        .values(
+            status=AccountStatus.disabled, spam_unlock_at=None, pause_reason=None
+        )
     )
 
 
@@ -202,6 +218,20 @@ def is_restricted(account: Account, *, now: datetime | None = None) -> bool:
     if account.limit_reduced_until is not None:
         return True
     return False
+
+
+def is_flood_waiting(account: Account, *, now: datetime | None = None) -> bool:
+    """Аккаунт сейчас на FloodWait-паузе (§6.3): статус `pause`, причина 'flood_wait'
+    и `spam_unlock_at` ещё не наступил. Отделяет реальный FloodWait от ночной
+    quiet-паузы (та же status=pause) — для видимости в /status и /floodwait."""
+    if account.status != AccountStatus.pause:
+        return False
+    if account.pause_reason != "flood_wait":
+        return False
+    if account.spam_unlock_at is None:
+        return True
+    now = now or datetime.now(timezone.utc)
+    return account.spam_unlock_at > now
 
 
 def effective_daily_limits(

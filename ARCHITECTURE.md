@@ -246,6 +246,7 @@ CREATE INDEX idx_accounts_unlock ON accounts(spam_unlock_at) WHERE spam_unlock_a
 
 **Пояснения:**
 - `spam_unlock_at` — единое поле для всех типов пауз (FloodWait, PeerFlood-карантин, ручная пауза). NULL = пауз нет.
+- `pause_reason` — метка причины паузы (`'flood_wait'` §6.3 / `'quiet_hours'` §5.3) для различения и видимости в `/status` и `/floodwait`. Сбрасывается в NULL при возврате в `active`/`spam_blocked`/`disabled`. На логику снятия паузы не влияет (её делает `is_pause_expired` по `spam_unlock_at`).
 - `limit_reduced_until` отдельно: даже когда `spam_unlock_at` истёк и аккаунт снова `active`, лимит может оставаться сниженным до получения положительного ответа от SpamBot.
 - `warmup_until` фиксирует, до какого момента применяются warmup-лимиты.
 
@@ -765,6 +766,8 @@ async def handle_flood_wait(account_id, task_id, seconds):
     )
 ```
 
+При паузе также пишется `pause_reason='flood_wait'` (`accounts_repo.set_pause(..., reason="flood_wait")`) — чтобы отличать FloodWait-паузу от ночной quiet-паузы (та же `status='pause'`, §5.3). Видимость: хелпер `is_flood_waiting()`, метка `⏳ FloodWait` в `/status` и команда `/floodwait` (§10.2). Активного опроса остатка FloodWait нет (Telegram его не отдаёт, а лишний запрос продлевает блок) — отслеживается реактивно по уже пойманным событиям `flood_wait` в таблице `logs`.
+
 ### 6.4. Обработка PeerFlood
 
 ```python
@@ -1087,6 +1090,7 @@ class AuthMiddleware(BaseMiddleware):
 | `/stop` | Полная остановка кампании |
 | `/spamcheck` | Принудительный SpamBot-чек всех аккаунтов |
 | `/spamcheck @username` | Принудительный чек одного аккаунта |
+| `/floodwait` | Аккаунты в FloodWait сейчас + счётчик за 24ч |
 | `/export_log [today\|yesterday\|N]` | Выгрузить лог за период |
 | `/export_report <campaign_id>` | CSV-отчёт по кампании |
 | `/settings` | Текущие настройки |

@@ -146,6 +146,10 @@ class Account(Base):
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
     limit_reduced_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Причина паузы (когда status=pause): 'flood_wait' (§6.3) или 'quiet_hours' (§5.3).
+    # NULL = не на паузе / прочее. Только метка для различения и видимости (/status,
+    # /floodwait); на саму логику пауз не влияет (снятие — is_pause_expired/таймер).
+    pause_reason: Mapped[str | None] = mapped_column(String(32))
     notes: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
