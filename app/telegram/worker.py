@@ -174,6 +174,9 @@ class WorkerAccount:
 
             while not self._stop_event.is_set():
                 try:
+                    if not await self._ensure_alive():
+                        await self._sleep(IDLE_POLL_SECONDS)
+                        continue
                     await self._tick()
                 except asyncio.CancelledError:
                     raise
@@ -212,6 +215,35 @@ class WorkerAccount:
                 f"требуется реавторизация через /add_account."
             )
             self._stop_event.set()
+
+    async def _ensure_alive(self) -> bool:
+        """Лёгкая проверка живости соединения перед каждым тиком (§16).
+
+        Telethon при сетевом обрыве делает `connection_retries` попыток и,
+        исчерпав их, остаётся disconnected. Тогда любой запрос в _tick падает с
+        `ConnectionError: Cannot send requests while disconnected`, и воркер
+        бесконечно крутит ошибку (наблюдалось на проде: тысячи ERROR в логах,
+        нулевая полезная работа). Здесь переподключаемся, если соединение
+        отвалилось в рантайме.
+
+        Без auth-RPC: валидность сессии уже проверена при старте в
+        `_ensure_connected`, а мёртвую сессию (401) ловит обработка в _tick →
+        `_mark_session_dead`. Возвращает True, если соединение живо/восстановлено,
+        иначе False (воркер просто поспит и попробует на следующем тике — без
+        шумного трейсбека на каждой итерации)."""
+        if self.client.is_connected():
+            return True
+        logger.warning(
+            "worker[{}] соединение потеряно — переподключаюсь", self.account_id
+        )
+        try:
+            await self.client.connect()
+            return True
+        except Exception as exc:
+            logger.warning(
+                "worker[{}] reconnect не удался: {}", self.account_id, exc
+            )
+            return False
 
     async def _sleep(self, seconds: float) -> None:
         """Прерываемый sleep — выходит сразу при stop()."""
