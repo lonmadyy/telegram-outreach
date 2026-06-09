@@ -14,8 +14,9 @@ from aiogram.types import CallbackQuery, Message
 from loguru import logger
 from sqlalchemy import select
 
+from app.bot import formatting as fmt
 from app.bot.keyboards import main_menu
-from app.db.models import Account, AccountStatus, CampaignStatus
+from app.db.models import Account, CampaignStatus
 from app.db.repositories import accounts as accounts_repo
 from app.db.repositories import campaigns as campaigns_repo
 from app.db.repositories import logs as logs_repo
@@ -26,26 +27,18 @@ router = Router(name="status")
 
 
 def _fmt_account_brief(acc: Account, last_check: str | None) -> str:
+    """Компактная одна строка для сводки /status — статус через общий formatting."""
     now = datetime.now(timezone.utc)
-    parts = [f"<b>{acc.phone}</b>", acc.status.value]
-    # Причинная метка: FloodWait (§6.3) ≠ ночной quiet-сон (§5.3) ≠ spam-блок (§6.4).
-    if accounts_repo.is_flood_waiting(acc, now=now) and acc.spam_unlock_at is not None:
-        mins = max(0, int((acc.spam_unlock_at - now).total_seconds() // 60))
-        parts.append(f"⏳ FloodWait до {acc.spam_unlock_at:%H:%M} (ещё {mins}м)")
-    elif acc.status == AccountStatus.pause and acc.pause_reason == "quiet_hours":
-        tail = f" до {acc.spam_unlock_at:%H:%M}" if acc.spam_unlock_at else ""
-        parts.append(f"🌙 quiet{tail}")
-    elif acc.status == AccountStatus.spam_blocked and acc.spam_unlock_at is not None:
-        parts.append(f"🚫 spam до {acc.spam_unlock_at:%H:%M %d.%m}")
-    elif acc.spam_unlock_at is not None and acc.spam_unlock_at > now:
-        parts.append(f"unlock {acc.spam_unlock_at:%H:%M %d.%m}")
+    emoji, status = fmt.account_status(acc, now=now)
+    parts = [
+        f"{emoji} <b>{acc.phone}</b> · {status}",
+        f"{acc.daily_invited} инв · {acc.daily_sent} DM",
+    ]
     if acc.limit_reduced_until is not None and acc.limit_reduced_until > now:
-        parts.append("75% лимит")
-    parts.append(f"sent {acc.daily_sent}")
-    parts.append(f"inv {acc.daily_invited}")
+        parts.append("лимит 75%")
     if last_check:
-        parts.append(f"SB:{last_check}")
-    return " | ".join(parts)
+        parts.append(f"SpamBot: {last_check}")
+    return " · ".join(parts)
 
 
 @router.message(Command("status"))
@@ -65,22 +58,14 @@ async def cmd_status(message: Message) -> None:
             if last is not None:
                 per_account_check[acc.id] = last.parsed_status
 
-    lines = ["<b>=== Кампании ===</b>"]
+    lines = [fmt.section_header("📢", "Кампании")]
     if not active_campaigns:
         lines.append("<i>нет активных или приостановленных</i>")
     else:
-        for c in active_campaigns:
-            progress_pct = (
-                int(c.sent_count / c.total_count * 100) if c.total_count else 0
-            )
-            lines.append(
-                f"#{c.id} [{c.type.value}] <b>{c.status.value}</b> | "
-                f"{c.sent_count}/{c.total_count} ({progress_pct}%) | "
-                f"skip {c.skipped_count} | fail {c.failed_count}"
-            )
+        lines.append("\n\n".join(fmt.campaign_card(c) for c in active_campaigns))
 
     lines.append("")
-    lines.append("<b>=== Аккаунты ===</b>")
+    lines.append(fmt.section_header("👤", "Аккаунты"))
     if not accounts:
         lines.append("<i>нет аккаунтов</i>")
     else:
@@ -88,10 +73,12 @@ async def cmd_status(message: Message) -> None:
         flood_now = sum(
             1 for acc in accounts if accounts_repo.is_flood_waiting(acc, now=now)
         )
-        for acc in accounts:
-            lines.append(
+        lines.append(
+            "\n".join(
                 _fmt_account_brief(acc, per_account_check.get(acc.id))
+                for acc in accounts
             )
+        )
         if flood_now:
             lines.append("")
             lines.append(f"⏳ В FloodWait сейчас: <b>{flood_now}</b> (детали — /floodwait)")
@@ -121,7 +108,7 @@ async def cmd_floodwait(event) -> None:
         )
 
     waiting = [a for a in accounts if accounts_repo.is_flood_waiting(a, now=now)]
-    lines = ["<b>=== FloodWait ===</b>"]
+    lines = [fmt.section_header("⏳", "FloodWait")]
     if not waiting:
         lines.append("<i>Сейчас никто не в FloodWait.</i>")
     else:

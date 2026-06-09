@@ -10,6 +10,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 from loguru import logger
 
+from app.bot import formatting as fmt
 from app.bot.keyboards import cancel_kb, confirm_kb, main_menu
 from app.bot.states import AddAccount
 from app.config import settings
@@ -45,25 +46,6 @@ from app.scheduler.jobs import get_scheduler
 router = Router(name="accounts")
 
 
-def _format_account_row(acc) -> str:
-    parts = [
-        f"<b>{acc.phone}</b>",
-        f"id={acc.id}",
-        f"status={acc.status.value}",
-    ]
-    if acc.username:
-        parts.append(f"@{acc.username}")
-    if acc.warmup_until:
-        parts.append(f"warmup_until={acc.warmup_until:%Y-%m-%d %H:%M}")
-    if acc.proxy_url:
-        parts.append("proxy=yes")
-    if acc.status == AccountStatus.pause and acc.pause_reason:
-        parts.append(f"pause:{acc.pause_reason}")
-    if acc.spam_unlock_at:
-        parts.append(f"unlock_at={acc.spam_unlock_at:%Y-%m-%d %H:%M}")
-    return " | ".join(parts)
-
-
 @router.message(Command("accounts"))
 @router.callback_query(F.data == "menu:accounts")
 async def list_accounts(event) -> None:
@@ -94,8 +76,9 @@ async def list_accounts(event) -> None:
         )
         return
 
-    text = "<b>Аккаунты:</b>\n\n" + "\n".join(_format_account_row(a) for a in items)
-    await target.answer(text + disabled_note, reply_markup=main_menu())
+    header = fmt.section_header("👤", "Аккаунты", f"{len(items)} активных")
+    body = "\n\n".join(fmt.account_card(a) for a in items)
+    await target.answer(f"{header}\n\n{body}{disabled_note}", reply_markup=main_menu())
 
 
 @router.message(Command("add_account"))
@@ -343,10 +326,9 @@ async def on_proxy(message: Message, state: FSMContext) -> None:
         else "воркер поднимется при следующем рестарте"
     )
     await message.answer(
-        f"Аккаунт <b>{sess.phone}</b> добавлен.\n"
-        f"id={acc.id} | status={acc.status.value} | "
-        f"warmup до {acc.warmup_until:%Y-%m-%d %H:%M} UTC\n"
-        f"Подписан на каналов: {joined} | {start_note}.",
+        f"✅ <b>Аккаунт {sess.phone} добавлен</b> (#{acc.id})\n"
+        f"🔥 Прогрев до {acc.warmup_until:%d.%m %H:%M} UTC\n"
+        f"Подписок на каналы: {joined} · {start_note}.",
         reply_markup=main_menu(),
     )
 

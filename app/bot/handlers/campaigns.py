@@ -14,6 +14,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import BufferedInputFile, CallbackQuery, Message
 from loguru import logger
 
+from app.bot import formatting as fmt
 from app.bot.keyboards import (
     campaign_type_kb,
     cancel_kb,
@@ -56,14 +57,9 @@ async def list_campaigns(event) -> None:
         )
         return
 
-    lines = ["<b>Кампании:</b>"]
-    for c in items:
-        lines.append(
-            f"#{c.id} [{c.type.value}] {c.status.value} | "
-            f"sent={c.sent_count}/{c.total_count} "
-            f"skip={c.skipped_count} fail={c.failed_count}"
-        )
-    await target.answer("\n".join(lines), reply_markup=main_menu())
+    header = fmt.section_header("📢", "Кампании", str(len(items)))
+    body = "\n\n".join(fmt.campaign_card(c) for c in items)
+    await target.answer(f"{header}\n\n{body}", reply_markup=main_menu())
 
 
 @router.message(Command("new_campaign"))
@@ -240,13 +236,12 @@ async def on_pick_template(query: CallbackQuery, state: FSMContext) -> None:
     if query.message is not None:
         body_head = template.body.replace("\n", " ")[:160]
         await query.message.answer(
-            f"<b>Готово к старту:</b>\n"
-            f"• Тип: рассылка\n"
-            f"• Username в работе: {len(usernames)}\n"
-            f"• Переотправлять &gt;180 дней: {'да' if resend_old else 'нет'}\n"
+            f"✅ <b>Готово к старту — рассылка</b>\n\n"
+            f"• Получателей в работе: {fmt.num(len(usernames))}\n"
+            f"• Переотправка тем, кому &gt;180 дней: {'да' if resend_old else 'нет'}\n"
             f"• Шаблон: <b>{template.name}</b>\n"
             f"  <code>{body_head}</code>\n\n"
-            "Жми «Подтвердить» — кампания создаётся и стартует.",
+            "Нажмите «Подтвердить» — кампания создаётся и запускается.",
             reply_markup=confirm_kb("camp:start"),
         )
     await query.answer()
@@ -327,12 +322,12 @@ async def on_target_chat(message: Message, state: FSMContext) -> None:
         )
     await state.set_state(NewCampaign.waiting_confirm)
     await message.answer(
-        f"<b>Готово к старту (инвайт):</b>\n"
+        f"✅ <b>Готово к старту — инвайт</b>\n\n"
         f"• Цель: <b>{resolved.title}</b> (<code>{resolved.chat_id}</code>)\n"
-        f"• Username в работе: {len(usernames)}\n"
-        f"• Переотправлять &gt;180 дней: {'да' if resend_old else 'нет'}\n"
+        f"• Получателей в работе: {fmt.num(len(usernames))}\n"
+        f"• Переотправка тем, кому &gt;180 дней: {'да' if resend_old else 'нет'}\n"
         f"• Аккаунтов с правом инвайта: {len(eligible)} из {len(account_ids)}{warn}\n\n"
-        "Жми «Подтвердить» — кампания создаётся и стартует.",
+        "Нажмите «Подтвердить» — кампания создаётся и запускается.",
         reply_markup=confirm_kb("camp:start"),
     )
 
@@ -410,14 +405,14 @@ async def on_campaign_start(query: CallbackQuery, state: FSMContext) -> None:
     if query.message is not None:
         kind = "инвайт" if is_invite else "рассылка"
         text = (
-            f"<b>Кампания #{campaign_id} ({kind}) создана:</b>\n"
-            f"• Задач в работу: {created}\n"
-            f"• Уже обработано ранее (пропущено): {skipped}\n"
+            f"✅ <b>Кампания #{campaign_id} создана — {kind}</b>\n\n"
+            f"• Задач в работу: {fmt.num(created)}\n"
+            f"• Пропущено (уже обрабатывались): {fmt.num(skipped)}\n"
         )
         if ok:
-            text += f"\nСтарт: {msg}"
+            text += f"\n▶️ {msg}"
         else:
-            text += f"\nНе удалось запустить: {msg}"
+            text += f"\n⚠️ Не удалось запустить: {msg}"
         await query.message.answer(text, reply_markup=main_menu())
     await query.answer("Готово")
 

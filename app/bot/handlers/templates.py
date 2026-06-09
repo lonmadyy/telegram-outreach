@@ -8,6 +8,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 from loguru import logger
 
+from app.bot import formatting as fmt
 from app.bot.keyboards import cancel_kb, confirm_kb, main_menu
 from app.bot.states import NewTemplate
 from app.campaigns.template_engine import (
@@ -42,11 +43,15 @@ async def list_templates(event) -> None:
         )
         return
 
-    lines = ["<b>Шаблоны:</b>"]
+    lines = [fmt.section_header("📝", "Шаблоны", str(len(items)))]
     for t in items:
         used_vars = ", ".join(t.variables) if t.variables else "—"
         head = t.body.replace("\n", " ")[:80]
-        lines.append(f"<b>#{t.id} {t.name}</b>\nvars: {used_vars}\n<code>{head}</code>")
+        lines.append(
+            f"📄 <b>#{t.id} · {t.name}</b>\n"
+            f"    Переменные: {used_vars}\n"
+            f"    <code>{head}</code>"
+        )
     await target.answer("\n\n".join(lines), reply_markup=main_menu())
 
 

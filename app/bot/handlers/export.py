@@ -16,6 +16,7 @@ from aiogram.filters import Command
 from aiogram.types import BufferedInputFile, Message
 from loguru import logger
 
+from app.bot import formatting as fmt
 from app.campaigns.reporting import build_campaign_csv, report_filename
 from app.config import settings
 from app.db.repositories import campaigns as campaigns_repo
@@ -54,11 +55,12 @@ async def cmd_export_report(message: Message) -> None:
     data = build_campaign_csv(campaign, tasks)
     filename = report_filename(campaign_id, datetime.now(timezone.utc))
     caption = (
-        f"Отчёт по кампании #{campaign_id} [{campaign.type.value}] "
-        f"{campaign.status.value}\n"
-        f"Всего: {campaign.total_count} | отправлено: {campaign.sent_count} | "
-        f"пропущено: {campaign.skipped_count} | ошибок: {campaign.failed_count}\n"
-        f"Задач в файле: {len(tasks)}"
+        f"📤 <b>Отчёт по кампании #{campaign_id}</b> · {fmt.campaign_type_ru(campaign)}\n"
+        f"{fmt.sent_label(campaign)}: {fmt.num(campaign.sent_count)} из "
+        f"{fmt.num(campaign.total_count)}\n"
+        f"Пропущено: {fmt.num(campaign.skipped_count)} · "
+        f"Ошибки: {fmt.num(campaign.failed_count)}\n"
+        f"Строк в файле: {fmt.num(len(tasks))}"
     )
     await message.answer_document(
         BufferedInputFile(data, filename=filename), caption=caption

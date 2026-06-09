@@ -7,6 +7,7 @@ from aiogram.filters import Command
 from aiogram.types import CallbackQuery, Message
 from loguru import logger
 
+from app.bot import formatting as fmt
 from app.bot.keyboards import main_menu
 from app.db.repositories import settings as settings_repo
 from app.db.session import session_scope
@@ -32,10 +33,10 @@ async def list_settings(event) -> None:
         await target.answer("Настроек пока нет.", reply_markup=main_menu())
         return
 
-    lines = ["<b>Текущие настройки:</b>", ""]
+    lines = [fmt.section_header("⚙️", "Настройки"), ""]
     for key in sorted(rows.keys()):
-        value, value_type = rows[key]
-        lines.append(f"<code>{key}</code> = <b>{value}</b> ({value_type})")
+        value, _ = rows[key]
+        lines.append(f"<code>{key}</code> = <b>{value}</b>")
     lines.append("")
     lines.append(
         "Изменить: <code>/set ключ значение</code>\n"

@@ -21,14 +21,27 @@ router = Router(name="common")
 
 
 HELP_TEXT = (
-    "<b>telegram-outreach</b>\n"
-    "Управление многоаккаунтной рассылкой и инвайтами.\n\n"
-    "<b>Команды:</b>\n"
+    "🤖 <b>telegram-outreach</b>\n"
+    "Многоаккаунтная рассылка и инвайты.\n\n"
+    "📊 <b>Мониторинг</b>\n"
+    "/status — кампании и аккаунты\n"
+    "/floodwait — кто сейчас в FloodWait\n"
+    "/campaigns — список кампаний\n\n"
+    "👤 <b>Аккаунты</b>\n"
     "/accounts — список аккаунтов\n"
-    "/add_account — добавить userbot-аккаунт (поддерживает 2FA)\n"
-    "/cancel — выйти из текущего сценария\n"
-    "/help — это сообщение\n\n"
-    "Главное меню — кнопки ниже."
+    "/add_account — добавить (поддержка 2FA)\n"
+    "/remove_account &lt;phone|id&gt; — удалить\n"
+    "/spamcheck — проверка через SpamBot\n\n"
+    "📢 <b>Кампании и шаблоны</b>\n"
+    "/new_campaign — создать кампанию\n"
+    "/templates · /new_template · /del_template — шаблоны\n"
+    "/pause · /resume · /stop &lt;id&gt; — управление\n\n"
+    "📤 <b>Экспорт и настройки</b>\n"
+    "/export_report &lt;id&gt; — CSV по кампании\n"
+    "/export_log [today|yesterday|N] — логи\n"
+    "/settings · /set ключ значение — настройки\n\n"
+    "/cancel — выйти из текущего сценария\n\n"
+    "Внизу — кнопки быстрого доступа."
 )
 
 
