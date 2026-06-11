@@ -8,9 +8,11 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
+from app.db.models import Account, AccountStatus
 from app.telegram.spam_checker import (
     ParsedSpamStatus,
     parse_spambot_response,
+    peerflood_cooldown_active,
     resolve_temporary_unlock,
 )
 
@@ -59,6 +61,48 @@ def test_russian_blocked_not_misread_as_no_limits():
     # Содержит «ограничен», но НЕ «свобод» → не должно стать no_limits.
     r = parse_spambot_response("Ваш аккаунт ограничен из-за жалоб пользователей.")
     assert r.status != "no_limits"
+
+
+# --- peerflood_cooldown_active (§6.5 кулдаун PeerFlood-карантина) ---
+
+
+def _acc(status: AccountStatus) -> Account:
+    a = Account()
+    a.id = 1
+    a.status = status
+    return a
+
+
+def test_cooldown_holds_spam_blocked_with_recent_peerflood():
+    # Главный кейс пинг-понга: spam_blocked + недавний peer_flood → карантин держим.
+    acc = _acc(AccountStatus.spam_blocked)
+    assert peerflood_cooldown_active(
+        acc, has_recent_peer_flood=True, cooldown_hours=3
+    ) is True
+
+
+def test_cooldown_lifts_after_window():
+    # peer_flood старше кулдауна → снятие по no_limits разрешено (§7.4 как обычно).
+    acc = _acc(AccountStatus.spam_blocked)
+    assert peerflood_cooldown_active(
+        acc, has_recent_peer_flood=False, cooldown_hours=3
+    ) is False
+
+
+def test_cooldown_disabled_by_zero_setting():
+    # peerflood_cooldown_hours=0 → фича выключена, поведение прежнее.
+    acc = _acc(AccountStatus.spam_blocked)
+    assert peerflood_cooldown_active(
+        acc, has_recent_peer_flood=True, cooldown_hours=0
+    ) is False
+
+
+def test_cooldown_only_for_spam_blocked():
+    # Кулдаун касается только spam_blocked; прочие статусы — не его зона.
+    for status in (AccountStatus.active, AccountStatus.pause, AccountStatus.warmup):
+        assert peerflood_cooldown_active(
+            _acc(status), has_recent_peer_flood=True, cooldown_hours=3
+        ) is False
 
 
 # --- прочие статусы без регрессий ---

@@ -68,6 +68,23 @@ async def exists_peer_flood_since(
     return result.first() is not None
 
 
+async def exists_peer_flood_for_account_since(
+    session: AsyncSession, *, account_id: int, since: datetime
+) -> bool:
+    """Был ли peer_flood у КОНКРЕТНОГО аккаунта начиная с `since`.
+
+    Для кулдауна PeerFlood-карантина (§6.5): SpamBot не отражает PeerFlood-лимит
+    и отвечает no_limits — без кулдауна карантин снимался в ту же секунду."""
+    result = await session.execute(
+        select(Log.id)
+        .where(Log.event_type == "peer_flood")
+        .where(Log.account_id == account_id)
+        .where(Log.ts >= since)
+        .limit(1)
+    )
+    return result.first() is not None
+
+
 async def flood_wait_counts_since(
     session: AsyncSession, *, since: datetime
 ) -> dict[int, int]:

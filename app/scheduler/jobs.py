@@ -137,6 +137,18 @@ class SchedulerService:
     async def _run_spamcheck(self, account_id: int, base_interval: int) -> None:
         """Один опрос SpamBot. §7.5: если для этого аккаунта стоит множитель
         (после собственного FloodWait на запросах) — пропустим лишние тики."""
+        # §7.1: в тихие часы воркеры спят — опрашивать SpamBot незачем (минус
+        # ~360 пустых сообщений за ночь и меньше собственных FloodWait на чеках).
+        # Управляется spamcheck_quiet_pause (bool, default on). Ручной /spamcheck
+        # идёт мимо джобы и работает в любое время.
+        if settings_cache.get_bool("spamcheck_quiet_pause", True):
+            if is_in_quiet_hours(
+                quiet_start=settings_cache.get_str("quiet_hours_start", "01:00"),
+                quiet_end=settings_cache.get_str("quiet_hours_end", "07:00"),
+                tz_name=settings_cache.get_str("quiet_hours_timezone", "Europe/Minsk"),
+            ):
+                return
+
         mult = get_interval_multiplier(account_id)
         if mult > 1.0:
             # Грубая дросселяция: вероятность срабатывания 1/mult.

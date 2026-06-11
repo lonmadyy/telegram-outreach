@@ -29,10 +29,11 @@ from loguru import logger
 from telethon import TelegramClient
 from telethon.errors import FloodWaitError
 
-from app.db.models import Account
+from app.db.models import Account, AccountStatus
 from app.db.repositories import accounts as accounts_repo
 from app.db.repositories import logs as logs_repo
 from app.db.repositories import spam_check as spam_check_repo
+from app.db.repositories.settings import settings_cache
 from app.db.session import session_scope
 from app.notifications.admin import notify_admin
 from app.telegram.errors import SESSION_DEAD_ERRORS
@@ -49,6 +50,27 @@ class ParsedSpamStatus:
 # Если SpamBot подтвердил временный блок, но дату снять не удалось — блокируем
 # на этот fallback-период, чтобы аккаунт не продолжал слать в бан (§7.3, §16, MVP-6).
 DEFAULT_TEMP_BLOCK_HOURS = 24
+
+# Кулдаун PeerFlood-карантина (§6.5): no_limits не снимает spam_blocked, если
+# peer_flood был младше этого порога. Настройка peerflood_cooldown_hours; 0 = выкл.
+DEFAULT_PEERFLOOD_COOLDOWN_HOURS = 3
+
+
+def peerflood_cooldown_active(
+    account: Account, *, has_recent_peer_flood: bool, cooldown_hours: int
+) -> bool:
+    """Чистая логика кулдауна (§6.5): держать ли spam_blocked, несмотря на
+    `no_limits` от SpamBot.
+
+    SpamBot не отражает PeerFlood-лимит (внутренний антиспам-скоринг Telegram)
+    и отвечает no_limits, пока аккаунт ещё режут — мгновенное снятие карантина
+    давало пинг-понг: на проде 116 PeerFlood за 72ч у одного аккаунта при
+    среднем времени жизни «12-часового» карантина 58 секунд."""
+    if cooldown_hours <= 0:
+        return False
+    if account.status != AccountStatus.spam_blocked:
+        return False
+    return has_recent_peer_flood
 
 
 def resolve_temporary_unlock(
@@ -344,6 +366,33 @@ async def _ensure_active_on_no_limits(session, account_id: int) -> None:
     account: Account | None = await accounts_repo.get_by_id(session, account_id)
     if account is None or not accounts_repo.is_spam_line_restricted(account):
         return
+
+    # Кулдаун PeerFlood-карантина (§6.5): SpamBot не видит PeerFlood-лимит и
+    # отвечает no_limits, пока Telegram ещё режет аккаунт. Если peer_flood был
+    # недавно — карантин держим, лифт возможен только после кулдауна.
+    if account.status == AccountStatus.spam_blocked:
+        cooldown_hours = settings_cache.get_int(
+            "peerflood_cooldown_hours", DEFAULT_PEERFLOOD_COOLDOWN_HOURS
+        )
+        has_recent = False
+        if cooldown_hours > 0:
+            since = datetime.now(timezone.utc) - timedelta(hours=cooldown_hours)
+            has_recent = await logs_repo.exists_peer_flood_for_account_since(
+                session, account_id=account_id, since=since
+            )
+        if peerflood_cooldown_active(
+            account,
+            has_recent_peer_flood=has_recent,
+            cooldown_hours=cooldown_hours,
+        ):
+            logger.debug(
+                "spam_check[{}]: no_limits, но peer_flood < {}ч назад — "
+                "карантин держим (§6.5 кулдаун)",
+                account_id,
+                cooldown_hours,
+            )
+            return
+
     await accounts_repo.set_active_no_limits(session, account_id=account_id)
     await logs_repo.log_event(
         session,
