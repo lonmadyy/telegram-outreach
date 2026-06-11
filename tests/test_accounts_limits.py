@@ -15,6 +15,7 @@ from app.db.repositories.accounts import (
     is_limit_reduced,
     is_pause_expired,
     is_restricted,
+    is_spam_line_restricted,
     warmup_age_limits,
 )
 
@@ -261,6 +262,64 @@ def test_restricted_active_with_unlock_true() -> None:
 
 def test_restricted_active_with_reduced_true() -> None:
     assert is_restricted(make_account(status=AccountStatus.active, reduced=True)) is True
+
+
+# --- is_spam_line_restricted (что снимает SpamBot no_limits, фикс пинг-понга) ---
+
+
+def test_spam_line_flood_wait_pause_not_lifted() -> None:
+    # FloodWait-пауза: SpamBot её НЕ снимает (свой таймер, §6.3) — иначе пинг-понг.
+    now = datetime.now(timezone.utc)
+    acc = make_account(
+        status=AccountStatus.pause,
+        pause_reason="flood_wait",
+        spam_unlock_at=now + timedelta(minutes=30),
+    )
+    assert is_spam_line_restricted(acc) is False
+
+
+def test_spam_line_quiet_pause_not_lifted() -> None:
+    # Ночная quiet-пауза: SpamBot её НЕ снимает (наше расписание, §5.3).
+    now = datetime.now(timezone.utc)
+    acc = make_account(
+        status=AccountStatus.pause,
+        pause_reason="quiet_hours",
+        spam_unlock_at=now + timedelta(hours=6),
+    )
+    assert is_spam_line_restricted(acc) is False
+
+
+def test_spam_line_legacy_null_reason_lifted() -> None:
+    # pause без причины (legacy/неизвестно) — снимается, как раньше (safe fallback).
+    acc = make_account(status=AccountStatus.pause, pause_reason=None)
+    assert is_spam_line_restricted(acc) is True
+
+
+def test_spam_line_spam_blocked_lifted() -> None:
+    # PeerFlood-карантин/temporary — это спам-линия, SpamBot снимает досрочно (§7.4).
+    now = datetime.now(timezone.utc)
+    acc = make_account(
+        status=AccountStatus.spam_blocked, spam_unlock_at=now + timedelta(hours=12)
+    )
+    assert is_spam_line_restricted(acc) is True
+
+
+def test_spam_line_active_with_reduced_lifted() -> None:
+    assert is_spam_line_restricted(
+        make_account(status=AccountStatus.active, reduced=True)
+    ) is True
+
+
+def test_spam_line_active_with_unlock_lifted() -> None:
+    now = datetime.now(timezone.utc)
+    acc = make_account(
+        status=AccountStatus.active, spam_unlock_at=now + timedelta(hours=1)
+    )
+    assert is_spam_line_restricted(acc) is True
+
+
+def test_spam_line_active_clean_false() -> None:
+    assert is_spam_line_restricted(make_account(status=AccountStatus.active)) is False
 
 
 # --- is_flood_waiting (FloodWait-пауза отдельно от quiet/spam) ---

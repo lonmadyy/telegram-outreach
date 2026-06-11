@@ -220,6 +220,26 @@ def is_restricted(account: Account, *, now: datetime | None = None) -> bool:
     return False
 
 
+def is_spam_line_restricted(account: Account, *, now: datetime | None = None) -> bool:
+    """Действует ли ограничение СПАМ-ЛИНИИ — то, что снимает SpamBot `no_limits`
+    (§6.5, §7.4): spam_blocked / сниженный лимит / остаточный spam_unlock_at.
+
+    Паузы `flood_wait` и `quiet_hours` сюда НЕ входят: FloodWait — локальный
+    rate-limit Telegram со своим таймером (§6.3), тихие часы — наше расписание
+    (§5.3); ответ SpamBot их не отменяет. Их возвращает воркер (is_pause_expired).
+    Без этого спам-чек снимал такие паузы через ≤4 мин → пинг-понг пустых ретраев
+    и шторм уведомлений (наблюдалось на проде: 346 «лимит восстановлен» за 48ч).
+
+    `pause` с reason NULL (legacy/неизвестно) — снимается, как раньше (safe fallback).
+    """
+    if account.status == AccountStatus.pause and account.pause_reason in (
+        "flood_wait",
+        "quiet_hours",
+    ):
+        return False
+    return is_restricted(account, now=now)
+
+
 def is_flood_waiting(account: Account, *, now: datetime | None = None) -> bool:
     """Аккаунт сейчас на FloodWait-паузе (§6.3): статус `pause`, причина 'flood_wait'
     и `spam_unlock_at` ещё не наступил. Отделяет реальный FloodWait от ночной

@@ -10,7 +10,9 @@
 Реакция на смену статуса (§7.4) делает state-transitions accounts:
   • temporary → set_spam_blocked со spam_unlock_at из ответа
   • permanent → set_dead + notify_admin
-  • no_limits → set_active_no_limits (§6.5 — сброс всех таймеров)
+  • no_limits → set_active_no_limits (§6.5 — снимает ограничения СПАМ-ЛИНИИ:
+    spam_blocked/сниженный лимит; паузы flood_wait/quiet_hours не трогает —
+    у них свои таймеры, их возвращает воркер по is_pause_expired)
   • soft_warning / unknown → не меняем статус
 """
 
@@ -326,14 +328,21 @@ async def _react_to_change(
 
 
 async def _ensure_active_on_no_limits(session, account_id: int) -> None:
-    """§6.5: при ответе SpamBot `no_limits` снять любое действующее ограничение и
-    вернуть аккаунт в active — НЕЗАВИСИМО от того, сменился ли распознанный статус
-    (SpamBot стабильно отвечает no_limits, поэтому «по смене» это не срабатывало).
+    """§6.5: при ответе SpamBot `no_limits` снять ограничение СПАМ-ЛИНИИ
+    (spam_blocked / сниженный лимит / остаточный spam_unlock_at) и вернуть аккаунт
+    в active — НЕЗАВИСИМО от того, сменился ли распознанный статус (SpamBot
+    стабильно отвечает no_limits, поэтому «по смене» это не срабатывало).
 
-    Идемпотентно: если аккаунт не ограничен (`is_restricted` False) — тихо выходим,
-    поэтому уведомление шлётся один раз, при фактическом восстановлении."""
+    Паузы flood_wait/quiet_hours НЕ снимаем (§6.3, §5.3): SpamBot про них ничего
+    не знает, у них свои таймеры, их возвращает воркер (is_pause_expired). Иначе
+    спам-чек снимал паузу через ≤4 мин → пинг-понг пустых ретраев + шторм
+    уведомлений (на проде: 346 «лимит восстановлен» за 48ч).
+
+    Идемпотентно: если спам-ограничения нет (`is_spam_line_restricted` False) —
+    тихо выходим, поэтому уведомление шлётся один раз, при фактическом
+    восстановлении."""
     account: Account | None = await accounts_repo.get_by_id(session, account_id)
-    if account is None or not accounts_repo.is_restricted(account):
+    if account is None or not accounts_repo.is_spam_line_restricted(account):
         return
     await accounts_repo.set_active_no_limits(session, account_id=account_id)
     await logs_repo.log_event(
