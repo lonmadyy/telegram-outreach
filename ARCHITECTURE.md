@@ -367,7 +367,7 @@ CREATE UNIQUE INDEX idx_tasks_campaign_username ON tasks(campaign_id, username);
 ```sql
 CREATE TABLE processed_clients (
     username            VARCHAR(64) PRIMARY KEY,
-    last_action         VARCHAR(16) NOT NULL,   -- 'message' | 'invite'
+    last_action         VARCHAR(16) NOT NULL,   -- 'message' | 'invite' | 'skip'
     last_result_code    result_code NOT NULL,
     first_processed_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     last_processed_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -381,15 +381,16 @@ CREATE INDEX idx_processed_last_at ON processed_clients(last_processed_at);
 **Логика проверки при подготовке кампании:**
 ```python
 if campaign.resend_old:
-    # Пропускаем только тех, кого обрабатывали недавно
+    # Переотправляем старые УСПЕХИ, но структурные отказы держим в skip всегда
     cutoff = now - timedelta(days=180)
-    skip_usernames = SELECT username FROM processed_clients WHERE last_processed_at >= cutoff
+    skip_usernames = SELECT username FROM processed_clients
+        WHERE last_result_code IN STRUCTURAL_SKIP_CODES OR last_processed_at >= cutoff
 else:
     # Пропускаем всех, кто был обработан хоть когда-то
     skip_usernames = SELECT username FROM processed_clients
 ```
 
-Запись в `processed_clients` происходит **только при `result_code IN ('ok')`** — то есть фактически после успешного действия. Ошибки (`not_found`, `privacy_restricted` и т.д.) попадают в отчёт кампании, но не блокируют переотправку в будущем (вдруг юзер сменил настройки приватности).
+Запись в `processed_clients` происходит при `result_code = ok` (успешный контакт) **и** при target-независимых структурных отказах `STRUCTURAL_SKIP_CODES` = {`privacy_restricted`, `not_found`, `deactivated`, `too_many_channels`}. Последние помним **навсегда** (даже при `resend_old`): каждая попытка — реальный API-запрос, нагружающий антиспам Telegram, а для заведомо непригодных это чистая потеря бюджета (на проде ~44% попыток — `privacy_restricted`). Повторяемые ошибки (`flood_wait`, `peer_flood`, `other_error`) и **target-специфичные** коды (`banned_in_channel`, `already_member` — верны лишь для конкретного чата) в реестр НЕ пишутся.
 
 ### 4.7. Таблица `spam_check_history`
 

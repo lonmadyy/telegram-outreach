@@ -959,6 +959,19 @@ class WorkerAccount:
             await campaigns_repo.update_counts(
                 session, campaign_id=campaign_id, skipped_delta=1
             )
+            # Target-независимый структурный отказ (приватность/невалидный/удалён/
+            # too_many_channels) — помним навсегда, чтобы будущие кампании не жгли
+            # антиспам-бюджет на заведомо непригодных (§4.6). banned_in_channel и
+            # already_member специфичны для чата — в реестр НЕ попадают.
+            if processed_repo.is_structural_skip(result_code):
+                await processed_repo.register_processed(
+                    session,
+                    username=username,
+                    last_action="skip",
+                    last_result_code=result_code,
+                    account_id=self.account_id,
+                    campaign_id=campaign_id,
+                )
             await logs_repo.log_event(
                 session,
                 level="info",

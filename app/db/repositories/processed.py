@@ -1,14 +1,16 @@
 """CRUD по таблице processed_clients. ARCHITECTURE.md §4.6, §9.1.
 
-Глобальный реестр обработанных клиентов между всеми кампаниями. Запись
-происходит ТОЛЬКО при `result_code = ok` (§4.6 конец раздела).
+Глобальный реестр обработанных клиентов между всеми кампаниями. Пишется при
+`result_code = ok` (успешный контакт) и при target-независимых СТРУКТУРНЫХ
+отказах (STRUCTURAL_SKIP_CODES) — последние помним навсегда, чтобы будущие
+кампании не сжигали антиспам-бюджет на заведомо непригодных (§4.6).
 """
 
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -21,6 +23,28 @@ PROCESSED_CUTOFF_DAYS = 180
 # (например 120k из TXT) бьём на части (§9.1).
 _USERNAMES_CHUNK = 5000
 
+# Структурные отказы, НЕ зависящие от целевого чата: помним глобально и больше
+# не пробуем в будущих кампаниях (§4.6). Каждая попытка инвайта/DM — реальный
+# API-запрос, нагружающий антиспам Telegram; для заведомо непригодных это чистая
+# потеря бюджета. ВАЖНО: сюда НЕ входят target-специфичные коды
+# (banned_in_channel, already_member) — они верны лишь для конкретного чата.
+STRUCTURAL_SKIP_CODES: frozenset[ResultCode] = frozenset(
+    {
+        ResultCode.privacy_restricted,
+        ResultCode.not_found,
+        ResultCode.deactivated,
+        ResultCode.too_many_channels,
+    }
+)
+
+
+def is_structural_skip(result_code: ResultCode) -> bool:
+    """Target-независимый структурный отказ — запоминается навсегда (§4.6).
+
+    Только для таких кодов `_record_skip` пишет клиента в реестр; повторяемые
+    (flood/peer/прочие ошибки) и target-специфичные (бан/уже-участник) — нет."""
+    return result_code in STRUCTURAL_SKIP_CODES
+
 
 async def already_processed_usernames(
     session: AsyncSession, *, usernames: list[str], resend_old: bool
@@ -29,7 +53,8 @@ async def already_processed_usernames(
 
     Логика из §4.6 «Логика проверки» / §9.1 п.2:
       - resend_old=False: пропускаем ВСЕХ, кто обрабатывался когда-либо.
-      - resend_old=True:  пропускаем только обработанных за последние 180 дней.
+      - resend_old=True:  пропускаем успехи за последние 180 дней, НО структурные
+        отказы (STRUCTURAL_SKIP_CODES) пропускаем всегда — их не пробуем повторно.
 
     Большой список бьётся на чанки, чтобы не превысить лимит параметров запроса.
     """
@@ -47,7 +72,14 @@ async def already_processed_usernames(
             ProcessedClient.username.in_(chunk)
         )
         if cutoff is not None:
-            stmt = stmt.where(ProcessedClient.last_processed_at >= cutoff)
+            # resend_old: переотправляем старые УСПЕХИ, но структурные отказы
+            # держим в skip всегда (они target-независимы и не «протухают»).
+            stmt = stmt.where(
+                or_(
+                    ProcessedClient.last_result_code.in_(STRUCTURAL_SKIP_CODES),
+                    ProcessedClient.last_processed_at >= cutoff,
+                )
+            )
         result = await session.execute(stmt)
         skip.update(row[0] for row in result.all())
     return skip
@@ -64,8 +96,9 @@ async def register_processed(
 ) -> None:
     """Upsert обработанного клиента.
 
-    Должно вызываться ТОЛЬКО при `result_code = ok` — иначе клиент не
-    блокируется для будущих кампаний.
+    Вызывается при `result_code = ok` (успех) и при структурных отказах из
+    STRUCTURAL_SKIP_CODES (см. is_structural_skip) — оба варианта блокируют
+    клиента для будущих кампаний (§4.6).
     """
     stmt = insert(ProcessedClient).values(
         username=username,
