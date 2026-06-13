@@ -108,13 +108,19 @@ async def on_phone(message: Message, state: FSMContext) -> None:
     try:
         async with session_scope() as session:
             existing = await accounts_repo.get_by_phone(session, phone)
-            if existing is not None:
+            if existing is not None and not accounts_repo.is_reactivatable(existing):
                 await message.answer(
                     f"Аккаунт {phone} уже добавлен (id={existing.id}).",
                     reply_markup=main_menu(),
                 )
                 await state.clear()
                 return
+            if existing is not None:
+                # disabled → повторная авторизация той же записи (§10.3).
+                await message.answer(
+                    f"Аккаунт {phone} был отключён (id={existing.id}). "
+                    f"Запускаю повторную авторизацию, история сохранится."
+                )
         sess = await start_login(phone)
     except InvalidPhoneError as e:
         await message.answer(f"{e}. Введите номер заново или /cancel.", reply_markup=cancel_kb())
@@ -276,25 +282,51 @@ async def on_proxy(message: Message, state: FSMContext) -> None:
         except Exception:
             logger.exception("get_me() after auth failed")
 
+    me_user_id = me.id if me is not None else None
+    me_username = getattr(me, "username", None)
+    me_first_name = getattr(me, "first_name", None)
+    s_path = session_path_for(sess.phone)
     async with session_scope() as session:
-        acc = await accounts_repo.create_account(
-            session,
-            phone=sess.phone,
-            session_path=session_path_for(sess.phone),
-            tg_user_id=me.id if me is not None else None,
-            username=getattr(me, "username", None),
-            first_name=getattr(me, "first_name", None),
-            proxy_url=proxy_url,
-            warmup_hours=settings.warmup_duration_hours,
-        )
-        await logs_repo.log_event(
-            session,
-            level="info",
-            event_type="account_added",
-            account_id=acc.id,
-            message=f"Аккаунт {acc.phone} добавлен (warmup на {settings.warmup_duration_hours}ч)",
-            payload={"with_proxy": proxy_url is not None, "username": acc.username},
-        )
+        existing = await accounts_repo.get_by_phone(session, sess.phone)
+        reactivated = existing is not None and accounts_repo.is_reactivatable(existing)
+        if reactivated:
+            # disabled → реактивируем ту же запись (id, история и дедуп целы), §10.3.
+            acc = await accounts_repo.reactivate_account(
+                session,
+                account=existing,
+                session_path=s_path,
+                tg_user_id=me_user_id,
+                username=me_username,
+                first_name=me_first_name,
+                proxy_url=proxy_url,
+            )
+            await logs_repo.log_event(
+                session,
+                level="info",
+                event_type="account_reactivated",
+                account_id=acc.id,
+                message=f"Аккаунт {acc.phone} переподключён (был disabled → active)",
+                payload={"with_proxy": proxy_url is not None, "username": acc.username},
+            )
+        else:
+            acc = await accounts_repo.create_account(
+                session,
+                phone=sess.phone,
+                session_path=s_path,
+                tg_user_id=me_user_id,
+                username=me_username,
+                first_name=me_first_name,
+                proxy_url=proxy_url,
+                warmup_hours=settings.warmup_duration_hours,
+            )
+            await logs_repo.log_event(
+                session,
+                level="info",
+                event_type="account_added",
+                account_id=acc.id,
+                message=f"Аккаунт {acc.phone} добавлен (warmup на {settings.warmup_duration_hours}ч)",
+                payload={"with_proxy": proxy_url is not None, "username": acc.username},
+            )
 
     # Warmup-подписка на каналы, пока клиент ещё авторизован (§5.1, MVP-5). Best-effort.
     joined = 0
@@ -325,12 +357,20 @@ async def on_proxy(message: Message, state: FSMContext) -> None:
         if started
         else "воркер поднимется при следующем рестарте"
     )
-    await message.answer(
-        f"✅ <b>Аккаунт {sess.phone} добавлен</b> (#{acc.id})\n"
-        f"🔥 Прогрев до {acc.warmup_until:%d.%m %H:%M} UTC\n"
-        f"Подписок на каналы: {joined} · {start_note}.",
-        reply_markup=main_menu(),
-    )
+    if reactivated:
+        await message.answer(
+            f"✅ <b>Аккаунт {sess.phone} переподключён</b> (#{acc.id})\n"
+            f"Статус: active, без прогрева (история сохранена).\n"
+            f"Подписок на каналы: {joined} · {start_note}.",
+            reply_markup=main_menu(),
+        )
+    else:
+        await message.answer(
+            f"✅ <b>Аккаунт {sess.phone} добавлен</b> (#{acc.id})\n"
+            f"🔥 Прогрев до {acc.warmup_until:%d.%m %H:%M} UTC\n"
+            f"Подписок на каналы: {joined} · {start_note}.",
+            reply_markup=main_menu(),
+        )
 
 
 # ---------------------------------------------------------------------------

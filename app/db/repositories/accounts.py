@@ -69,6 +69,40 @@ async def create_account(
     return account
 
 
+async def reactivate_account(
+    session: AsyncSession,
+    *,
+    account: Account,
+    session_path: str,
+    tg_user_id: int | None = None,
+    username: str | None = None,
+    first_name: str | None = None,
+    proxy_url: str | None = None,
+) -> Account:
+    """Повторная активация ранее отключённого (disabled) аккаунта (§10.3).
+
+    Обновляет ТУ ЖЕ строку (id сохраняется → история, дедуп processed_clients,
+    логи и FK целы) — обратное к set_disabled, обещанная обратимость
+    /remove_account. По решению: сразу active, без повторного warmup; счётчики и
+    остаточные ограничения сброшены; профиль и путь сессии — из нового логина."""
+    account.status = AccountStatus.active
+    account.warmup_until = None
+    account.spam_unlock_at = None
+    account.pause_reason = None
+    account.limit_reduced_until = None
+    account.daily_sent = 0
+    account.daily_invited = 0
+    account.last_reset_at = datetime.now(timezone.utc)
+    account.last_used_at = None
+    account.session_path = session_path
+    account.tg_user_id = tg_user_id
+    account.username = username
+    account.first_name = first_name
+    account.proxy_url = proxy_url
+    await session.flush()
+    return account
+
+
 async def delete_account(session: AsyncSession, account_id: int) -> bool:
     account = await session.get(Account, account_id)
     if account is None:
@@ -178,6 +212,12 @@ async def set_disabled(session: AsyncSession, *, account_id: int) -> None:
 # ---------------------------------------------------------------------------
 # Лимиты и счётчики. §5.1 «Дневные лимиты», §6.5.
 # ---------------------------------------------------------------------------
+
+
+def is_reactivatable(account: Account) -> bool:
+    """Можно ли повторно активировать аккаунт через /add_account (§10.3).
+    Только disabled (мягко удалённый); живые статусы реактивации не подлежат."""
+    return account.status == AccountStatus.disabled
 
 
 def is_in_warmup(account: Account, *, now: datetime | None = None) -> bool:

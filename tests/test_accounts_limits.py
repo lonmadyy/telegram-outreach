@@ -14,6 +14,7 @@ from app.db.repositories.accounts import (
     is_in_warmup,
     is_limit_reduced,
     is_pause_expired,
+    is_reactivatable,
     is_restricted,
     is_spam_line_restricted,
     warmup_age_limits,
@@ -367,3 +368,22 @@ def test_flood_waiting_expired_unlock_false() -> None:
         spam_unlock_at=now - timedelta(minutes=1),
     )
     assert is_flood_waiting(acc) is False
+
+
+# --- is_reactivatable (повторное добавление disabled через /add_account, §10.3) ---
+
+
+def test_reactivatable_only_disabled() -> None:
+    assert is_reactivatable(make_account(status=AccountStatus.disabled)) is True
+
+
+def test_reactivatable_live_statuses_false() -> None:
+    # Живые статусы реактивации не подлежат — защита от случайного «воскрешения».
+    for st in (
+        AccountStatus.active,
+        AccountStatus.warmup,
+        AccountStatus.pause,
+        AccountStatus.spam_blocked,
+        AccountStatus.dead,
+    ):
+        assert is_reactivatable(make_account(status=st)) is False
