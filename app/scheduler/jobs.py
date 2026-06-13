@@ -137,6 +137,20 @@ class SchedulerService:
     async def _run_spamcheck(self, account_id: int, base_interval: int) -> None:
         """Один опрос SpamBot. §7.5: если для этого аккаунта стоит множитель
         (после собственного FloodWait на запросах) — пропустим лишние тики."""
+        # §7.1: dead/disabled-аккаунт опрашивать бессмысленно (сессия мертва) —
+        # джоба снимает САМА СЕБЯ. Это единый chokepoint: покрывает все пути
+        # перехода в dead (worker и spam_check) без хуков в каждом из них.
+        async with session_scope() as session:
+            account = await accounts_repo.get_by_id(session, account_id)
+        if account is None or not accounts_repo.is_spamcheckable(account):
+            self.remove_spamcheck_for_account(account_id)
+            logger.info(
+                "Scheduler: spamcheck снят для account_id={} (status={})",
+                account_id,
+                account.status.value if account is not None else "missing",
+            )
+            return
+
         # §7.1: в тихие часы воркеры спят — опрашивать SpamBot незачем (минус
         # ~360 пустых сообщений за ночь и меньше собственных FloodWait на чеках).
         # Управляется spamcheck_quiet_pause (bool, default on). Ручной /spamcheck

@@ -220,6 +220,13 @@ def is_reactivatable(account: Account) -> bool:
     return account.status == AccountStatus.disabled
 
 
+def is_spamcheckable(account: Account) -> bool:
+    """Нужно ли опрашивать SpamBot для аккаунта (§7.1): для dead/disabled — нет
+    (сессия мертва / аккаунт отключён), для остальных статусов — да (нужно ловить
+    восстановление). На основе этого spamcheck-джоба снимает себя для мёртвых."""
+    return account.status not in (AccountStatus.dead, AccountStatus.disabled)
+
+
 def is_in_warmup(account: Account, *, now: datetime | None = None) -> bool:
     if account.warmup_until is None:
         return False

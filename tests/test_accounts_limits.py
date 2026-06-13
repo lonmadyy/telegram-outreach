@@ -17,6 +17,7 @@ from app.db.repositories.accounts import (
     is_reactivatable,
     is_restricted,
     is_spam_line_restricted,
+    is_spamcheckable,
     warmup_age_limits,
 )
 
@@ -387,3 +388,22 @@ def test_reactivatable_live_statuses_false() -> None:
         AccountStatus.dead,
     ):
         assert is_reactivatable(make_account(status=st)) is False
+
+
+# --- is_spamcheckable (spamcheck-джоба снимает себя для dead/disabled, §7.1) ---
+
+
+def test_spamcheckable_live_statuses_true() -> None:
+    # Живые статусы нужно опрашивать — ловим восстановление.
+    for st in (
+        AccountStatus.active,
+        AccountStatus.warmup,
+        AccountStatus.pause,
+        AccountStatus.spam_blocked,
+    ):
+        assert is_spamcheckable(make_account(status=st)) is True
+
+
+def test_spamcheckable_dead_disabled_false() -> None:
+    assert is_spamcheckable(make_account(status=AccountStatus.dead)) is False
+    assert is_spamcheckable(make_account(status=AccountStatus.disabled)) is False
