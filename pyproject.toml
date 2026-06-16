@@ -18,7 +18,7 @@ structlog = "^24.1"
 apscheduler = "^3.10"
 cryptography = "^42.0"
 python-dateutil = "^2.9"
-pysocks = "^1.7"
+python-socks = {extras = ["asyncio"], version = "^2.0"}
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.0"
