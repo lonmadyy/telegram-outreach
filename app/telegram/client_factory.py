@@ -19,6 +19,11 @@ from app.config import settings
 
 _NON_DIGIT = re.compile(r"\D")
 _HEX_RE = re.compile(r"[0-9a-fA-F]+")
+# mtproto://SECRET@HOST:PORT — secret разбираем regex'ом, а не urlparse: base64-secret
+# содержит '/' и '+', которые ломают urlparse (secret стоит в позиции username).
+_MTPROTO_RE = re.compile(
+    r"mtproto://(?P<secret>[^@]+)@(?P<host>[^:/@]+):(?P<port>\d+)/?$", re.IGNORECASE
+)
 
 
 def normalize_phone(raw: str) -> str:
@@ -92,23 +97,32 @@ class ProxyConfig:
 def _normalize_mtproto_secret(secret: str) -> str:
     """Secret MTProto-прокси → hex-строка, как ожидает Telethon.
 
-    Принимает secret в hex (возвращает как есть) либо в base64 / base64url
-    (декодирует в байты и отдаёт hex). Бросает ValueError на пустом/битом secret.
+    Принимает secret в hex (как есть) либо base64/base64url (декодирует в hex).
+    Отклоняет fake-TLS секреты (первый байт 0xEE) — их транспорт Telethon не
+    поддерживает. Замечание: secret из одних hex-символов трактуется как hex,
+    а не base64 — это неустранимая неоднозначность форматов.
     """
     s = (secret or "").strip()
     if not s:
         raise ValueError("MTProto secret пустой")
     if _HEX_RE.fullmatch(s) and len(s) % 2 == 0:
-        return s.lower()
-    s2 = s.replace("-", "+").replace("_", "/")
-    s2 += "=" * (-len(s2) % 4)
-    try:
-        raw = base64.b64decode(s2)
-    except Exception as e:  # noqa: BLE001 — любой сбой декодирования = невалидный secret
-        raise ValueError(f"Невалидный MTProto secret: {secret!r}") from e
-    if not raw:
-        raise ValueError(f"Невалидный MTProto secret: {secret!r}")
-    return raw.hex()
+        hexs = s.lower()
+    else:
+        s2 = s.replace("-", "+").replace("_", "/")
+        s2 += "=" * (-len(s2) % 4)
+        try:
+            raw = base64.b64decode(s2)
+        except Exception as e:  # noqa: BLE001 — любой сбой декодирования = невалидный secret
+            raise ValueError(f"Невалидный MTProto secret: {secret!r}") from e
+        if not raw:
+            raise ValueError(f"Невалидный MTProto secret: {secret!r}")
+        hexs = raw.hex()
+    if hexs.startswith("ee"):
+        raise ValueError(
+            "MTProto fake-TLS (secret с префиксом ee) не поддерживается Telethon — "
+            "используйте обычный MTProxy-secret или SOCKS5."
+        )
+    return hexs
 
 
 def parse_proxy(proxy_url: str | None) -> ProxyConfig | None:
@@ -145,13 +159,17 @@ def parse_proxy(proxy_url: str | None) -> ProxyConfig | None:
         return ProxyConfig(proxy=proxy)
 
     if scheme == "mtproto":
-        host, port, secret = p.hostname, p.port, p.username
-        if not host or not port or not secret:
+        m = _MTPROTO_RE.fullmatch(raw)
+        if not m:
             raise ValueError(
                 f"Невалидный MTProto-URL (нужно mtproto://secret@host:port): {proxy_url!r}"
             )
         return ProxyConfig(
-            proxy=(host, port, _normalize_mtproto_secret(secret)),
+            proxy=(
+                m.group("host"),
+                int(m.group("port")),
+                _normalize_mtproto_secret(m.group("secret")),
+            ),
             connection=ConnectionTcpMTProxyRandomizedIntermediate,
         )
 

@@ -1142,7 +1142,7 @@ state: waiting_2fa
         → PasswordHashInvalidError: повторить
 state: waiting_proxy
     bot: "Указать прокси? socks5://user:pass@host:port / mtproto://secret@host:port / tg://proxy?server=...&port=...&secret=... или 'skip'"
-    user: "skip" или URL прокси (socks5 — python-socks; MTProto — Telethon ConnectionTcpMTProxyRandomizedIntermediate, secret в hex/base64)
+    user: "skip" или URL прокси (socks5 — python-socks; MTProto — Telethon ConnectionTcpMTProxyRandomizedIntermediate, secret в hex/base64). fake-TLS MTProxy (secret с префиксом ee) НЕ поддерживается Telethon — отклоняется с понятной ошибкой
     bot: проверяет прокси через подключение тестовое (опционально)
         → сохраняет аккаунт в БД со статусом 'warmup', warmup_until = now + 48h
         → warmup-подписка на каналы, пока клиент авторизован (§5.1, MVP-5)

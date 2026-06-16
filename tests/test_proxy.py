@@ -127,3 +127,37 @@ def test_secret_arbitrary_base64_smoke():
     # произвольный base64-secret (как у MTProto-прокси) → непустой hex
     out = _normalize_mtproto_secret("dGVzdC1tdHByb3RvLXNlY3JldC0xMjM0")
     assert out and all(c in "0123456789abcdef" for c in out)
+
+
+# --- mtproto:// с base64-secret со спецсимволами (regex, не urlparse) ---
+
+
+def test_mtproto_base64_secret_special_chars():
+    secret_bytes = bytes([0xFB, 0xFF, 0xBF] * 5)  # base64 даёт "+/+/..." (есть + и /)
+    b64 = base64.b64encode(secret_bytes).decode()
+    assert "+" in b64 and "/" in b64
+    cfg = parse_proxy(f"mtproto://{b64}@1.2.3.4:443")
+    assert cfg.connection is ConnectionTcpMTProxyRandomizedIntermediate
+    assert cfg.proxy == ("1.2.3.4", 443, secret_bytes.hex())
+
+
+# --- fake-TLS (ee) отклоняется во всех путях ---
+
+
+def test_fake_tls_secret_hex_rejected():
+    with pytest.raises(ValueError, match="fake-TLS"):
+        _normalize_mtproto_secret("ee" + "00" * 16)
+
+
+def test_fake_tls_via_tg_link_rejected():
+    raw = bytes([0xEE]) + bytes(range(15)) + b"mail.ru"  # как у реального proxy6-fake-TLS
+    b64 = base64.b64encode(raw).decode()
+    with pytest.raises(ValueError, match="fake-TLS"):
+        parse_proxy(f"tg://proxy?server=1.2.3.4&port=443&secret={b64}")
+
+
+def test_fake_tls_via_mtproto_scheme_rejected():
+    raw = bytes([0xEE]) + bytes(range(15))
+    b64 = base64.b64encode(raw).decode()
+    with pytest.raises(ValueError, match="fake-TLS"):
+        parse_proxy(f"mtproto://{b64}@1.2.3.4:443")
