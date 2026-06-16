@@ -241,8 +241,11 @@ async def on_password(message: Message, state: FSMContext) -> None:
 async def _ask_proxy(message: Message) -> None:
     await message.answer(
         "Указать прокси для этого аккаунта?\n"
-        "Формат: <code>socks5://user:pass@host:port</code> "
-        "или просто <code>socks5://host:port</code>.\n\n"
+        "Поддерживаемые форматы:\n"
+        "• <code>socks5://user:pass@host:port</code>\n"
+        "• <code>mtproto://secret@host:port</code>\n"
+        "• <code>tg://proxy?server=...&amp;port=...&amp;secret=...</code>\n\n"
+        "Secret для MTProto принимается в hex или base64.\n"
         "Отправьте URL или слово <b>skip</b>, чтобы пропустить.",
         reply_markup=cancel_kb(),
     )

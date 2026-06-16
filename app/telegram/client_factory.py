@@ -6,15 +6,19 @@
 
 from __future__ import annotations
 
+import base64
 import re
+from dataclasses import dataclass
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 from telethon import TelegramClient
+from telethon.network import ConnectionTcpMTProxyRandomizedIntermediate
 
 from app.config import settings
 
 _NON_DIGIT = re.compile(r"\D")
+_HEX_RE = re.compile(r"[0-9a-fA-F]+")
 
 
 def normalize_phone(raw: str) -> str:
@@ -72,30 +76,107 @@ def parse_account_ref(arg: str | None) -> tuple[str, str | int] | None:
     return None
 
 
-def parse_proxy(proxy_url: str | None) -> dict | None:
-    """`socks5://user:pass@host:port` -> dict для Telethon (python-socks).
+@dataclass(frozen=True)
+class ProxyConfig:
+    """Разобранный прокси для передачи в `TelegramClient`.
 
-    Поддерживается только socks5 в MVP. MTProto-прокси могут быть добавлены позже.
-    Возвращает None если proxy_url пустой/невалидный.
+    `proxy` — значение аргумента `proxy=` (dict для socks5 / кортеж
+    `(host, port, secret_hex)` для MTProto). `connection` — connection-класс
+    Telethon (только для MTProto, иначе None — обычный TCP).
+    """
+
+    proxy: dict | tuple
+    connection: type | None = None
+
+
+def _normalize_mtproto_secret(secret: str) -> str:
+    """Secret MTProto-прокси → hex-строка, как ожидает Telethon.
+
+    Принимает secret в hex (возвращает как есть) либо в base64 / base64url
+    (декодирует в байты и отдаёт hex). Бросает ValueError на пустом/битом secret.
+    """
+    s = (secret or "").strip()
+    if not s:
+        raise ValueError("MTProto secret пустой")
+    if _HEX_RE.fullmatch(s) and len(s) % 2 == 0:
+        return s.lower()
+    s2 = s.replace("-", "+").replace("_", "/")
+    s2 += "=" * (-len(s2) % 4)
+    try:
+        raw = base64.b64decode(s2)
+    except Exception as e:  # noqa: BLE001 — любой сбой декодирования = невалидный secret
+        raise ValueError(f"Невалидный MTProto secret: {secret!r}") from e
+    if not raw:
+        raise ValueError(f"Невалидный MTProto secret: {secret!r}")
+    return raw.hex()
+
+
+def parse_proxy(proxy_url: str | None) -> ProxyConfig | None:
+    """Разбор строки `accounts.proxy_url` в конфиг прокси для Telethon.
+
+    Поддерживаемые форматы:
+      • `socks5://[user:pass@]host:port`                         — SOCKS5 (python-socks);
+      • `mtproto://secret@host:port`                             — MTProto-прокси Telegram;
+      • `tg://proxy?server=host&port=port&secret=secret`         — родная ссылка Telegram.
+    Secret (для MTProto) принимается в hex или base64. Возвращает None для пустой
+    строки, бросает ValueError для невалидного ввода/неизвестной схемы.
     """
     if not proxy_url:
         return None
-    p = urlparse(proxy_url)
-    if p.scheme.lower() != "socks5":
-        raise ValueError(f"Unsupported proxy scheme: {p.scheme!r} (only socks5 in MVP)")
-    if not p.hostname or not p.port:
-        raise ValueError(f"Invalid proxy URL (host/port required): {proxy_url!r}")
-    proxy: dict = {
-        "proxy_type": "socks5",
-        "addr": p.hostname,
-        "port": p.port,
-        "rdns": True,
-    }
-    if p.username:
-        proxy["username"] = p.username
-    if p.password:
-        proxy["password"] = p.password
-    return proxy
+    raw = proxy_url.strip()
+    if not raw:
+        return None
+    p = urlparse(raw)
+    scheme = p.scheme.lower()
+
+    if scheme == "socks5":
+        if not p.hostname or not p.port:
+            raise ValueError(f"Невалидный socks5-URL (нужны host/port): {proxy_url!r}")
+        proxy: dict = {
+            "proxy_type": "socks5",
+            "addr": p.hostname,
+            "port": p.port,
+            "rdns": True,
+        }
+        if p.username:
+            proxy["username"] = p.username
+        if p.password:
+            proxy["password"] = p.password
+        return ProxyConfig(proxy=proxy)
+
+    if scheme == "mtproto":
+        host, port, secret = p.hostname, p.port, p.username
+        if not host or not port or not secret:
+            raise ValueError(
+                f"Невалидный MTProto-URL (нужно mtproto://secret@host:port): {proxy_url!r}"
+            )
+        return ProxyConfig(
+            proxy=(host, port, _normalize_mtproto_secret(secret)),
+            connection=ConnectionTcpMTProxyRandomizedIntermediate,
+        )
+
+    if scheme == "tg" and (p.netloc or "").lower() == "proxy":
+        q = parse_qs(p.query)
+        host = (q.get("server") or [None])[0]
+        port_s = (q.get("port") or [None])[0]
+        secret = (q.get("secret") or [None])[0]
+        if not host or not port_s or not secret:
+            raise ValueError(
+                f"Невалидная tg://-ссылка (нужны server, port, secret): {proxy_url!r}"
+            )
+        try:
+            port = int(port_s)
+        except ValueError as e:
+            raise ValueError(f"Невалидный port в tg://-ссылке: {port_s!r}") from e
+        return ProxyConfig(
+            proxy=(host, port, _normalize_mtproto_secret(secret)),
+            connection=ConnectionTcpMTProxyRandomizedIntermediate,
+        )
+
+    raise ValueError(
+        f"Неподдерживаемая схема прокси: {p.scheme!r} "
+        f"(поддерживаются socks5://, mtproto://, tg://proxy?...)"
+    )
 
 
 def create_client(
@@ -109,11 +190,17 @@ def create_client(
     system_lang_code: str = "en",
 ) -> TelegramClient:
     """Создаёт (но не подключает) Telethon-клиент. Подключение и авторизация — отдельно."""
+    cfg = parse_proxy(proxy_url)
+    proxy_kwargs: dict = {}
+    if cfg is not None:
+        proxy_kwargs["proxy"] = cfg.proxy
+        if cfg.connection is not None:
+            proxy_kwargs["connection"] = cfg.connection
     return TelegramClient(
         session=session_path_for(phone),
         api_id=settings.tg_api_id,
         api_hash=settings.tg_api_hash,
-        proxy=parse_proxy(proxy_url),
+        **proxy_kwargs,
         device_model=device_model,
         system_version=system_version,
         app_version=app_version,

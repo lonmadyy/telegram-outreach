@@ -225,7 +225,7 @@ CREATE TABLE accounts (
     username        VARCHAR(64),              -- @username, если есть
     first_name      VARCHAR(128),
     session_path    VARCHAR(255) NOT NULL,    -- 'data/sessions/79991234567.session'
-    proxy_url       VARCHAR(255),             -- 'socks5://user:pass@host:port' или NULL
+    proxy_url       VARCHAR(255),             -- socks5://user:pass@host:port / mtproto://secret@host:port / tg://proxy?... или NULL
     status          account_status NOT NULL DEFAULT 'warmup',
     spam_unlock_at  TIMESTAMPTZ,              -- когда снимется текущая пауза
     warmup_until    TIMESTAMPTZ,              -- до какого момента действует warmup
@@ -1141,8 +1141,8 @@ state: waiting_2fa
         → success: переход в waiting_proxy
         → PasswordHashInvalidError: повторить
 state: waiting_proxy
-    bot: "Указать прокси? Формат: socks5://user:pass@host:port или 'skip'"
-    user: "skip" или "socks5://..."
+    bot: "Указать прокси? socks5://user:pass@host:port / mtproto://secret@host:port / tg://proxy?server=...&port=...&secret=... или 'skip'"
+    user: "skip" или URL прокси (socks5 — python-socks; MTProto — Telethon ConnectionTcpMTProxyRandomizedIntermediate, secret в hex/base64)
     bot: проверяет прокси через подключение тестовое (опционально)
         → сохраняет аккаунт в БД со статусом 'warmup', warmup_until = now + 48h
         → warmup-подписка на каналы, пока клиент авторизован (§5.1, MVP-5)
