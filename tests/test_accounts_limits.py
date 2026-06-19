@@ -371,11 +371,12 @@ def test_flood_waiting_expired_unlock_false() -> None:
     assert is_flood_waiting(acc) is False
 
 
-# --- is_reactivatable (повторное добавление disabled через /add_account, §10.3) ---
+# --- is_reactivatable (повторное добавление disabled/dead через /add_account, §10.3) ---
 
 
-def test_reactivatable_only_disabled() -> None:
+def test_reactivatable_disabled_and_dead() -> None:
     assert is_reactivatable(make_account(status=AccountStatus.disabled)) is True
+    assert is_reactivatable(make_account(status=AccountStatus.dead)) is True
 
 
 def test_reactivatable_live_statuses_false() -> None:
@@ -385,7 +386,6 @@ def test_reactivatable_live_statuses_false() -> None:
         AccountStatus.warmup,
         AccountStatus.pause,
         AccountStatus.spam_blocked,
-        AccountStatus.dead,
     ):
         assert is_reactivatable(make_account(status=st)) is False
 

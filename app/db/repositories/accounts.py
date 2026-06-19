@@ -216,8 +216,9 @@ async def set_disabled(session: AsyncSession, *, account_id: int) -> None:
 
 def is_reactivatable(account: Account) -> bool:
     """Можно ли повторно активировать аккаунт через /add_account (§10.3).
-    Только disabled (мягко удалённый); живые статусы реактивации не подлежат."""
-    return account.status == AccountStatus.disabled
+    disabled (мягко удалён) и dead (сессия невалидна, нужна реавторизация) — да;
+    живые статусы (warmup/active/pause/spam_blocked) реактивации не подлежат."""
+    return account.status in (AccountStatus.disabled, AccountStatus.dead)
 
 
 def is_spamcheckable(account: Account) -> bool:

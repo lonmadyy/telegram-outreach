@@ -116,9 +116,9 @@ async def on_phone(message: Message, state: FSMContext) -> None:
                 await state.clear()
                 return
             if existing is not None:
-                # disabled → повторная авторизация той же записи (§10.3).
+                # disabled/dead → повторная авторизация той же записи (§10.3).
                 await message.answer(
-                    f"Аккаунт {phone} был отключён (id={existing.id}). "
+                    f"Аккаунт {phone} уже есть (id={existing.id}). "
                     f"Запускаю повторную авторизацию, история сохранится."
                 )
         sess = await start_login(phone)
@@ -293,7 +293,8 @@ async def on_proxy(message: Message, state: FSMContext) -> None:
         existing = await accounts_repo.get_by_phone(session, sess.phone)
         reactivated = existing is not None and accounts_repo.is_reactivatable(existing)
         if reactivated:
-            # disabled → реактивируем ту же запись (id, история и дедуп целы), §10.3.
+            # disabled/dead → реактивируем ту же запись (id, история и дедуп целы), §10.3.
+            prev_status = existing.status.value
             acc = await accounts_repo.reactivate_account(
                 session,
                 account=existing,
@@ -308,7 +309,7 @@ async def on_proxy(message: Message, state: FSMContext) -> None:
                 level="info",
                 event_type="account_reactivated",
                 account_id=acc.id,
-                message=f"Аккаунт {acc.phone} переподключён (был disabled → active)",
+                message=f"Аккаунт {acc.phone} переподключён ({prev_status} → active)",
                 payload={"with_proxy": proxy_url is not None, "username": acc.username},
             )
         else:
