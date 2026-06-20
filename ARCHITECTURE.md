@@ -226,6 +226,8 @@ CREATE TABLE accounts (
     first_name      VARCHAR(128),
     session_path    VARCHAR(255) NOT NULL,    -- 'data/sessions/79991234567.session'
     proxy_url       VARCHAR(255),             -- socks5://user:pass@host:port / mtproto://secret@host:port / tg://proxy?... или NULL
+    api_id          INT,                      -- per-account Telegram api_id (§11.1); NULL → глобальный ключ из .env (legacy)
+    api_hash        VARCHAR(64),              -- per-account Telegram api_hash; NULL → глобальный из .env
     status          account_status NOT NULL DEFAULT 'warmup',
     spam_unlock_at  TIMESTAMPTZ,              -- когда снимется текущая пауза
     warmup_until    TIMESTAMPTZ,              -- до какого момента действует warmup
@@ -249,6 +251,7 @@ CREATE INDEX idx_accounts_unlock ON accounts(spam_unlock_at) WHERE spam_unlock_a
 - `pause_reason` — метка причины паузы (`'flood_wait'` §6.3 / `'quiet_hours'` §5.3) для различения и видимости в `/status` и `/floodwait`. Сбрасывается в NULL при возврате в `active`/`spam_blocked`/`disabled`. На логику снятия паузы не влияет (её делает `is_pause_expired` по `spam_unlock_at`).
 - `limit_reduced_until` отдельно: даже когда `spam_unlock_at` истёк и аккаунт снова `active`, лимит может оставаться сниженным до получения положительного ответа от SpamBot.
 - `warmup_until` фиксирует, до какого момента применяются warmup-лимиты.
+- `api_id` / `api_hash` — per-account Telegram API-ключ (§11.1). Telethon привязывает `api_id` к `.session` при логине, поэтому ключ задаётся при добавлении аккаунта и далее неизменен; используется во всех точках создания клиента (логин, воркер, logout). NULL = глобальный ключ из `.env` (legacy-аккаунты, заведённые до этой фичи). Разные ключи на разные аккаунты разводят нагрузку и снижают риск массовых ревокаций.
 
 ### 4.2. Таблица `proxies` (опциональная, для удобства)
 
@@ -1126,11 +1129,19 @@ class AuthMiddleware(BaseMiddleware):
 ```
 state: waiting_phone
     user: "+79991234567"
-    bot: проверка «уже добавлен» (is_reactivatable пропускает disabled/dead), затем → waiting_proxy
-state: waiting_proxy   (СНАЧАЛА прокси — чтобы вход шёл уже через него)
+    bot: проверка «уже добавлен» (is_reactivatable пропускает disabled/dead), затем → waiting_api_id
+state: waiting_api_id   (per-account ключ нужен до create_client, §11.1)
+    bot: "Введите api_id для этого аккаунта (число с my.telegram.org)"
+    user: "2040"
+    bot: parse_api_id (только цифры, >0); ошибка → переспросить; ок → waiting_api_hash
+state: waiting_api_hash
+    bot: "Введите api_hash (32 hex-символа)"
+    user: "0123...ef"  (сообщение с секретом удаляется из чата best-effort)
+    bot: validate_api_hash (32 hex); ошибка → переспросить; ок → waiting_proxy
+state: waiting_proxy   (прокси до входа — чтобы вход шёл уже через него)
     bot: "Через какой прокси заводить аккаунт? socks5:// / mtproto://secret@host:port / tg://proxy?... или 'skip'"
     user: "skip" или URL прокси (socks5 — python-socks; MTProto — Telethon ConnectionTcpMTProxyRandomizedIntermediate, secret hex/base64; fake-TLS ee не поддерживается)
-    bot: вызывает start_login(phone, proxy_url) — connect/send_code/sign_in идут УЖЕ через прокси (аккаунт привязан к IP прокси с авторизации, а не к IP сервера)
+    bot: вызывает start_login(phone, proxy_url, api_id, api_hash) — connect/send_code/sign_in идут УЖЕ через прокси и под per-account ключом (аккаунт привязан к IP прокси и api_id с авторизации)
         → success: переход в waiting_code
         → FloodWait/PhoneNumberBanned: сообщение об ошибке, сброс FSM
 state: waiting_code
@@ -1145,7 +1156,7 @@ state: waiting_2fa
         → success: сохранение аккаунта
         → PasswordHashInvalidError: повторить
 сохранение (_save_account, после успешного входа):
-    → сохраняет/реактивирует аккаунт в БД (proxy_url из сессии — вход уже шёл через него), статус 'warmup', warmup_until = now + 48h
+    → сохраняет/реактивирует аккаунт в БД (proxy_url из сессии, api_id/api_hash из FSM-context — вход уже шёл через них), статус 'warmup', warmup_until = now + 48h
         → warmup-подписка на каналы, пока клиент авторизован (§5.1, MVP-5)
         → запускает воркер (worker_pool.start_for) + регистрирует spamcheck-задачу:
           аккаунт греется СРАЗУ, без рестарта приложения
@@ -1217,7 +1228,7 @@ ETA: ~9ч 30мин
 ### 11.1. Файл `.env`
 
 ```env
-# === Telegram API ===
+# === Telegram API (глобальный ключ — fallback для аккаунтов без своего, см. ниже) ===
 TG_API_ID=34554902
 TG_API_HASH=<секрет, в репо НЕ хранится>
 BOT_TOKEN=<секрет, в репо НЕ хранится>
@@ -1258,6 +1269,8 @@ ADAPTIVE_LIMIT_REDUCTION_DAYS=7
 ```
 
 В `.env.example` (коммитится в Git) все секреты заменены на `<placeholder>`. Реальный `.env` находится в `.gitignore`.
+
+**Per-account API-ключ.** `TG_API_ID`/`TG_API_HASH` из `.env` — это **глобальный ключ по умолчанию (fallback)**. При добавлении аккаунта через `/add_account` бот спрашивает отдельные `api_id`/`api_hash` (шаги `waiting_api_id`/`waiting_api_hash`, §10.3) и хранит их в `accounts.api_id`/`accounts.api_hash` (§4.1). Если поле NULL (legacy-аккаунты, заведённые до фичи) — используется глобальный ключ из `.env`. Разные ключи на разные аккаунты разводят нагрузку на один API и снижают риск массовых ревокаций сессий. `api_hash` — секрет: не логируется (в событиях фиксируется только факт наличия ключа), сообщение с ним удаляется из чата.
 
 ### 11.2. Pydantic settings
 
