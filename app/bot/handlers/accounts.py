@@ -105,50 +105,26 @@ async def on_phone(message: Message, state: FSMContext) -> None:
             reply_markup=cancel_kb(),
         )
         return
-    try:
-        async with session_scope() as session:
-            existing = await accounts_repo.get_by_phone(session, phone)
-            if existing is not None and not accounts_repo.is_reactivatable(existing):
-                await message.answer(
-                    f"Аккаунт {phone} уже добавлен (id={existing.id}).",
-                    reply_markup=main_menu(),
-                )
-                await state.clear()
-                return
-            if existing is not None:
-                # disabled/dead → повторная авторизация той же записи (§10.3).
-                await message.answer(
-                    f"Аккаунт {phone} уже есть (id={existing.id}). "
-                    f"Запускаю повторную авторизацию, история сохранится."
-                )
-        sess = await start_login(phone)
-    except InvalidPhoneError as e:
-        await message.answer(f"{e}. Введите номер заново или /cancel.", reply_markup=cancel_kb())
-        return
-    except PhoneBannedError as e:
-        await message.answer(f"{e}.", reply_markup=main_menu())
-        await state.clear()
-        return
-    except FloodError as e:
-        await message.answer(
-            f"FloodWait {e.seconds}s — Telegram просит подождать. Попробуйте позже.",
-            reply_markup=main_menu(),
-        )
-        await state.clear()
-        return
-    except Exception as e:
-        logger.exception("start_login failed for {}", phone)
-        await message.answer(f"Не удалось запустить авторизацию: {e}", reply_markup=main_menu())
-        await state.clear()
-        return
-
-    await auth_store.set(message.from_user.id, sess)
-    await state.set_state(AddAccount.waiting_code)
-    await message.answer(
-        "Код отправлен. Введите его сюда. "
-        "Если коды приходят в Telegram, скопируйте оттуда.",
-        reply_markup=cancel_kb(),
-    )
+    async with session_scope() as session:
+        existing = await accounts_repo.get_by_phone(session, phone)
+        if existing is not None and not accounts_repo.is_reactivatable(existing):
+            await message.answer(
+                f"Аккаунт {phone} уже добавлен (id={existing.id}).",
+                reply_markup=main_menu(),
+            )
+            await state.clear()
+            return
+        if existing is not None:
+            # disabled/dead → повторная авторизация той же записи (§10.3).
+            await message.answer(
+                f"Аккаунт {phone} уже есть (id={existing.id}). "
+                f"Запускаю повторную авторизацию, история сохранится."
+            )
+    # Прокси спрашиваем ДО входа (§10.3): запрос кода и sign_in пойдут уже через
+    # прокси — аккаунт сразу привязан к IP прокси, а не к IP сервера.
+    await state.update_data(phone=phone)
+    await state.set_state(AddAccount.waiting_proxy)
+    await _ask_proxy(message)
 
 
 @router.message(AddAccount.waiting_code, F.text)
@@ -194,8 +170,7 @@ async def on_code(message: Message, state: FSMContext) -> None:
         )
         return
 
-    await state.set_state(AddAccount.waiting_proxy)
-    await _ask_proxy(message)
+    await _save_account(message, state, sess)
 
 
 @router.message(AddAccount.waiting_password, F.text)
@@ -234,13 +209,12 @@ async def on_password(message: Message, state: FSMContext) -> None:
     except Exception:
         pass
 
-    await state.set_state(AddAccount.waiting_proxy)
-    await _ask_proxy(message)
+    await _save_account(message, state, sess)
 
 
 async def _ask_proxy(message: Message) -> None:
     await message.answer(
-        "Указать прокси для этого аккаунта?\n"
+        "Через какой прокси заводить аккаунт? Вход (запрос кода и авторизация) пойдёт сразу через него.\n"
         "Поддерживаемые форматы:\n"
         "• <code>socks5://user:pass@host:port</code>\n"
         "• <code>mtproto://secret@host:port</code>\n"
@@ -255,8 +229,9 @@ async def _ask_proxy(message: Message) -> None:
 async def on_proxy(message: Message, state: FSMContext) -> None:
     if message.from_user is None or message.text is None:
         return
-    sess = await auth_store.get(message.from_user.id)
-    if sess is None:
+    data = await state.get_data()
+    phone = data.get("phone")
+    if not phone:
         await message.answer(
             "Сессия истекла, начните заново через /add_account.",
             reply_markup=main_menu(),
@@ -276,7 +251,47 @@ async def on_proxy(message: Message, state: FSMContext) -> None:
             await message.answer(f"Невалидный прокси: {e}. Введите снова или skip.")
             return
 
-    # Сохраняем в БД
+    # Вход через прокси с первого запроса кода (§10.3): connect/send_code/sign_in
+    # пойдут уже через указанный прокси, не через IP сервера.
+    try:
+        sess = await start_login(phone, proxy_url)
+    except InvalidPhoneError as e:
+        await message.answer(f"{e}. Начните заново через /add_account.", reply_markup=main_menu())
+        await state.clear()
+        return
+    except PhoneBannedError as e:
+        await message.answer(f"{e}.", reply_markup=main_menu())
+        await state.clear()
+        return
+    except FloodError as e:
+        await message.answer(
+            f"FloodWait {e.seconds}s — Telegram просит подождать. Попробуйте позже.",
+            reply_markup=main_menu(),
+        )
+        await state.clear()
+        return
+    except Exception as e:
+        logger.exception("start_login failed for {}", phone)
+        await message.answer(f"Не удалось запустить авторизацию: {e}", reply_markup=main_menu())
+        await state.clear()
+        return
+
+    await auth_store.set(message.from_user.id, sess)
+    await state.set_state(AddAccount.waiting_code)
+    via = "через прокси" if proxy_url else "без прокси"
+    await message.answer(
+        f"Код отправлен ({via}). Введите его сюда. "
+        "Если код пришёл в Telegram, скопируйте оттуда.",
+        reply_markup=cancel_kb(),
+    )
+
+
+async def _save_account(message: Message, state: FSMContext, sess) -> None:
+    """Сохранение аккаунта в БД после успешной авторизации (§10.3).
+    proxy_url берётся из сессии — вход уже шёл через этот прокси."""
+    if message.from_user is None:
+        return
+    proxy_url = sess.proxy_url
     me = sess.me
     if me is None:
         try:

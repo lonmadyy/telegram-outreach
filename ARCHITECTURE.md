@@ -1126,25 +1126,26 @@ class AuthMiddleware(BaseMiddleware):
 ```
 state: waiting_phone
     user: "+79991234567"
-    bot: вызывает client.send_code_request(phone)
+    bot: проверка «уже добавлен» (is_reactivatable пропускает disabled/dead), затем → waiting_proxy
+state: waiting_proxy   (СНАЧАЛА прокси — чтобы вход шёл уже через него)
+    bot: "Через какой прокси заводить аккаунт? socks5:// / mtproto://secret@host:port / tg://proxy?... или 'skip'"
+    user: "skip" или URL прокси (socks5 — python-socks; MTProto — Telethon ConnectionTcpMTProxyRandomizedIntermediate, secret hex/base64; fake-TLS ee не поддерживается)
+    bot: вызывает start_login(phone, proxy_url) — connect/send_code/sign_in идут УЖЕ через прокси (аккаунт привязан к IP прокси с авторизации, а не к IP сервера)
         → success: переход в waiting_code
-        → error (PhoneNumberInvalid): сообщение об ошибке, возврат в waiting_phone
+        → FloodWait/PhoneNumberBanned: сообщение об ошибке, сброс FSM
 state: waiting_code
     user: "12345"
     bot: вызывает client.sign_in(phone, code)
-        → success: переход в waiting_proxy
+        → success: сохранение аккаунта (см. ниже)
         → SessionPasswordNeededError: переход в waiting_2fa
         → PhoneCodeInvalidError: повторить ввод кода
 state: waiting_2fa
     user: "myCloudPassword"
     bot: вызывает client.sign_in(password=...)
-        → success: переход в waiting_proxy
+        → success: сохранение аккаунта
         → PasswordHashInvalidError: повторить
-state: waiting_proxy
-    bot: "Указать прокси? socks5://user:pass@host:port / mtproto://secret@host:port / tg://proxy?server=...&port=...&secret=... или 'skip'"
-    user: "skip" или URL прокси (socks5 — python-socks; MTProto — Telethon ConnectionTcpMTProxyRandomizedIntermediate, secret в hex/base64). fake-TLS MTProxy (secret с префиксом ee) НЕ поддерживается Telethon — отклоняется с понятной ошибкой
-    bot: проверяет прокси через подключение тестовое (опционально)
-        → сохраняет аккаунт в БД со статусом 'warmup', warmup_until = now + 48h
+сохранение (_save_account, после успешного входа):
+    → сохраняет/реактивирует аккаунт в БД (proxy_url из сессии — вход уже шёл через него), статус 'warmup', warmup_until = now + 48h
         → warmup-подписка на каналы, пока клиент авторизован (§5.1, MVP-5)
         → запускает воркер (worker_pool.start_for) + регистрирует spamcheck-задачу:
           аккаунт греется СРАЗУ, без рестарта приложения
