@@ -135,6 +135,11 @@ class Account(Base):
     first_name: Mapped[str | None] = mapped_column(String(128))
     session_path: Mapped[str] = mapped_column(String(255), nullable=False)
     proxy_url: Mapped[str | None] = mapped_column(String(255))
+    # Per-account Telegram API-ключ (§11.1). NULL → используется глобальный ключ из .env
+    # (legacy-аккаунты). Telethon привязывает api_id к .session при логине, поэтому ключ
+    # должен оставаться неизменным весь срок жизни аккаунта.
+    api_id: Mapped[int | None] = mapped_column(Integer)
+    api_hash: Mapped[str | None] = mapped_column(String(64))
     status: Mapped[AccountStatus] = mapped_column(
         account_status_enum, nullable=False, server_default=AccountStatus.warmup.value
     )

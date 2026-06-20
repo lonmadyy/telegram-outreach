@@ -7,6 +7,8 @@ from aiogram.fsm.state import State, StatesGroup
 
 class AddAccount(StatesGroup):
     waiting_phone = State()
+    waiting_api_id = State()
+    waiting_api_hash = State()
     waiting_code = State()
     waiting_password = State()
     waiting_proxy = State()

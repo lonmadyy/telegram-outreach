@@ -124,14 +124,24 @@ async def _safe_disconnect(client: TelegramClient) -> None:
         pass
 
 
-async def start_login(phone: str, proxy_url: str | None = None) -> AuthSession:
-    """Запускает SMS/Telegram-код. Возвращает свежий AuthSession."""
+async def start_login(
+    phone: str,
+    proxy_url: str | None = None,
+    api_id: int | None = None,
+    api_hash: str | None = None,
+) -> AuthSession:
+    """Запускает SMS/Telegram-код. Возвращает свежий AuthSession.
+
+    `api_id`/`api_hash` — per-account ключ (§11.1); None → глобальный из .env.
+    """
     phone = normalize_phone(phone)
     if not phone or len(phone) < 8:
         raise InvalidPhoneError("Слишком короткий номер")
     if len(phone) > 16:  # '+' + до 15 цифр (E.164)
         raise InvalidPhoneError("Слишком длинный номер")
-    client = create_client(phone=phone, proxy_url=proxy_url)
+    client = create_client(
+        phone=phone, proxy_url=proxy_url, api_id=api_id, api_hash=api_hash
+    )
     try:
         await client.connect()
     except Exception:

@@ -32,7 +32,12 @@ class WorkerPool:
             if existing is not None and existing.is_running:
                 return existing
 
-            client = create_client(phone=account.phone, proxy_url=account.proxy_url)
+            client = create_client(
+                phone=account.phone,
+                proxy_url=account.proxy_url,
+                api_id=account.api_id,
+                api_hash=account.api_hash,
+            )
             try:
                 await client.connect()
             except Exception:

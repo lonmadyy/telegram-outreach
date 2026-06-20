@@ -35,9 +35,11 @@ from app.telegram.client_factory import (
     create_client,
     normalize_phone,
     parse_account_ref,
+    parse_api_id,
     parse_proxy,
     session_file_paths,
     session_path_for,
+    validate_api_hash,
 )
 from app.telegram import warmup as warmup_mod
 from app.telegram.worker_pool import worker_pool
@@ -120,9 +122,49 @@ async def on_phone(message: Message, state: FSMContext) -> None:
                 f"Аккаунт {phone} уже есть (id={existing.id}). "
                 f"Запускаю повторную авторизацию, история сохранится."
             )
-    # Прокси спрашиваем ДО входа (§10.3): запрос кода и sign_in пойдут уже через
-    # прокси — аккаунт сразу привязан к IP прокси, а не к IP сервера.
+    # Сначала api_id/api_hash, затем прокси, и только потом вход (§10.3): per-account
+    # ключ нужен уже на этапе create_client, а вход идёт сразу через прокси.
     await state.update_data(phone=phone)
+    await state.set_state(AddAccount.waiting_api_id)
+    await message.answer(
+        "Введите <b>api_id</b> для этого аккаунта (число с https://my.telegram.org).\n"
+        "Свой ключ на каждый аккаунт снижает нагрузку на один API и риск массовых блокировок.",
+        reply_markup=cancel_kb(),
+    )
+
+
+@router.message(AddAccount.waiting_api_id, F.text)
+async def on_api_id(message: Message, state: FSMContext) -> None:
+    if message.from_user is None or message.text is None:
+        return
+    try:
+        api_id = parse_api_id(message.text)
+    except ValueError as e:
+        await message.answer(f"{e}. Введите api_id заново или /cancel.", reply_markup=cancel_kb())
+        return
+    await state.update_data(api_id=api_id)
+    await state.set_state(AddAccount.waiting_api_hash)
+    await message.answer(
+        "Теперь введите <b>api_hash</b> этого аккаунта (32 hex-символа с my.telegram.org).",
+        reply_markup=cancel_kb(),
+    )
+
+
+@router.message(AddAccount.waiting_api_hash, F.text)
+async def on_api_hash(message: Message, state: FSMContext) -> None:
+    if message.from_user is None or message.text is None:
+        return
+    try:
+        api_hash = validate_api_hash(message.text)
+    except ValueError as e:
+        await message.answer(f"{e}. Введите api_hash заново или /cancel.", reply_markup=cancel_kb())
+        return
+    await state.update_data(api_hash=api_hash)
+    # api_hash — секрет: убираем сообщение с ним из чата (best-effort).
+    try:
+        await message.delete()
+    except Exception:
+        pass
     await state.set_state(AddAccount.waiting_proxy)
     await _ask_proxy(message)
 
@@ -238,6 +280,8 @@ async def on_proxy(message: Message, state: FSMContext) -> None:
         )
         await state.clear()
         return
+    api_id = data.get("api_id")
+    api_hash = data.get("api_hash")
 
     raw = message.text.strip()
     proxy_url: str | None
@@ -254,7 +298,7 @@ async def on_proxy(message: Message, state: FSMContext) -> None:
     # Вход через прокси с первого запроса кода (§10.3): connect/send_code/sign_in
     # пойдут уже через указанный прокси, не через IP сервера.
     try:
-        sess = await start_login(phone, proxy_url)
+        sess = await start_login(phone, proxy_url, api_id=api_id, api_hash=api_hash)
     except InvalidPhoneError as e:
         await message.answer(f"{e}. Начните заново через /add_account.", reply_markup=main_menu())
         await state.clear()
@@ -292,6 +336,9 @@ async def _save_account(message: Message, state: FSMContext, sess) -> None:
     if message.from_user is None:
         return
     proxy_url = sess.proxy_url
+    data = await state.get_data()
+    api_id = data.get("api_id")
+    api_hash = data.get("api_hash")
     me = sess.me
     if me is None:
         try:
@@ -318,6 +365,8 @@ async def _save_account(message: Message, state: FSMContext, sess) -> None:
                 username=me_username,
                 first_name=me_first_name,
                 proxy_url=proxy_url,
+                api_id=api_id,
+                api_hash=api_hash,
             )
             await logs_repo.log_event(
                 session,
@@ -336,6 +385,8 @@ async def _save_account(message: Message, state: FSMContext, sess) -> None:
                 username=me_username,
                 first_name=me_first_name,
                 proxy_url=proxy_url,
+                api_id=api_id,
+                api_hash=api_hash,
                 warmup_hours=settings.warmup_duration_hours,
             )
             await logs_repo.log_event(
@@ -459,7 +510,9 @@ async def on_remove_confirm(query: CallbackQuery) -> None:
 
     phone = acc.phone
     proxy_url = acc.proxy_url
-    result = await _remove_account_fully(account_id, phone, proxy_url)
+    result = await _remove_account_fully(
+        account_id, phone, proxy_url, acc.api_id, acc.api_hash
+    )
 
     if query.message is not None:
         await query.message.answer(
@@ -470,7 +523,11 @@ async def on_remove_confirm(query: CallbackQuery) -> None:
 
 
 async def _remove_account_fully(
-    account_id: int, phone: str, proxy_url: str | None
+    account_id: int,
+    phone: str,
+    proxy_url: str | None,
+    api_id: int | None = None,
+    api_hash: str | None = None,
 ) -> str:
     """Оркестрация мягкого удаления (§10.2): стоп воркера → снятие spamcheck →
     log_out + удаление .session → статус disabled. Каждый внешний шаг best-effort:
@@ -496,7 +553,9 @@ async def _remove_account_fully(
     # 3. Log out в Telegram + удаление .session (временный клиент, best-effort).
     logged_out = False
     try:
-        client = create_client(phone=phone, proxy_url=proxy_url)
+        client = create_client(
+            phone=phone, proxy_url=proxy_url, api_id=api_id, api_hash=api_hash
+        )
         try:
             await client.connect()
             if await client.is_user_authorized():

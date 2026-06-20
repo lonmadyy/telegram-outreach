@@ -19,6 +19,7 @@ from app.config import settings
 
 _NON_DIGIT = re.compile(r"\D")
 _HEX_RE = re.compile(r"[0-9a-fA-F]+")
+_API_HASH_RE = re.compile(r"[0-9a-f]{32}")
 # mtproto://SECRET@HOST:PORT — secret разбираем regex'ом, а не urlparse: base64-secret
 # содержит '/' и '+', которые ломают urlparse (secret стоит в позиции username).
 _MTPROTO_RE = re.compile(
@@ -37,6 +38,46 @@ def normalize_phone(raw: str) -> str:
     if not digits:
         return ""
     return "+" + digits
+
+
+def parse_api_id(raw: str) -> int:
+    """Telegram `api_id` из пользовательского ввода → положительное целое.
+
+    Принимает только цифры (с обрезкой пробелов). Чистая функция для FSM-валидации
+    (§10.3). Бросает ValueError на пустом/нечисловом/неположительном вводе.
+    """
+    s = (raw or "").strip()
+    if not s.isdigit():
+        raise ValueError("api_id — это число (только цифры), напр. 2040")
+    value = int(s)
+    if value <= 0:
+        raise ValueError("api_id должен быть положительным")
+    return value
+
+
+def validate_api_hash(raw: str) -> str:
+    """Telegram `api_hash` из ввода → нормализованная hex-строка (32 символа).
+
+    Обрезает пробелы, приводит к нижнему регистру; требует ровно 32 hex-символа.
+    Чистая функция для FSM-валидации (§10.3). Бросает ValueError на несоответствии.
+    """
+    s = (raw or "").strip().lower()
+    if not _API_HASH_RE.fullmatch(s):
+        raise ValueError("api_hash — 32 hex-символа (0-9, a-f)")
+    return s
+
+
+def effective_api_credentials(
+    api_id: int | None, api_hash: str | None
+) -> tuple[int, str]:
+    """Пара (api_id, api_hash) для клиента с откатом на глобальный ключ из .env (§11.1).
+
+    Per-account ключ (оба не None) используется как есть; иначе берётся глобальный
+    `settings.tg_api_id`/`tg_api_hash` (legacy-аккаунты с NULL в БД). Чистая функция.
+    """
+    if api_id is not None and api_hash:
+        return api_id, api_hash
+    return settings.tg_api_id, settings.tg_api_hash
 
 
 def session_path_for(phone: str) -> str:
@@ -201,23 +242,29 @@ def create_client(
     *,
     phone: str,
     proxy_url: str | None = None,
+    api_id: int | None = None,
+    api_hash: str | None = None,
     device_model: str = "PC 64bit",
     system_version: str = "Linux",
     app_version: str = "1.0.0",
     lang_code: str = "en",
     system_lang_code: str = "en",
 ) -> TelegramClient:
-    """Создаёт (но не подключает) Telethon-клиент. Подключение и авторизация — отдельно."""
+    """Создаёт (но не подключает) Telethon-клиент. Подключение и авторизация — отдельно.
+
+    `api_id`/`api_hash` — per-account ключ (§11.1); если None — берётся глобальный из .env.
+    """
     cfg = parse_proxy(proxy_url)
     proxy_kwargs: dict = {}
     if cfg is not None:
         proxy_kwargs["proxy"] = cfg.proxy
         if cfg.connection is not None:
             proxy_kwargs["connection"] = cfg.connection
+    eff_api_id, eff_api_hash = effective_api_credentials(api_id, api_hash)
     return TelegramClient(
         session=session_path_for(phone),
-        api_id=settings.tg_api_id,
-        api_hash=settings.tg_api_hash,
+        api_id=eff_api_id,
+        api_hash=eff_api_hash,
         **proxy_kwargs,
         device_model=device_model,
         system_version=system_version,

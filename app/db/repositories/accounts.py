@@ -50,9 +50,13 @@ async def create_account(
     username: str | None = None,
     first_name: str | None = None,
     proxy_url: str | None = None,
+    api_id: int | None = None,
+    api_hash: str | None = None,
     warmup_hours: int = 48,
 ) -> Account:
-    """Создаёт новый аккаунт в статусе warmup. §5.1, §4.1."""
+    """Создаёт новый аккаунт в статусе warmup. §5.1, §4.1.
+
+    `api_id`/`api_hash` — per-account ключ (§11.1); None → глобальный из .env."""
     warmup_until = datetime.now(timezone.utc) + timedelta(hours=warmup_hours)
     account = Account(
         phone=phone,
@@ -61,6 +65,8 @@ async def create_account(
         username=username,
         first_name=first_name,
         proxy_url=proxy_url,
+        api_id=api_id,
+        api_hash=api_hash,
         status=AccountStatus.warmup,
         warmup_until=warmup_until,
     )
@@ -78,6 +84,8 @@ async def reactivate_account(
     username: str | None = None,
     first_name: str | None = None,
     proxy_url: str | None = None,
+    api_id: int | None = None,
+    api_hash: str | None = None,
 ) -> Account:
     """Повторная активация ранее отключённого (disabled) аккаунта (§10.3).
 
@@ -99,6 +107,8 @@ async def reactivate_account(
     account.username = username
     account.first_name = first_name
     account.proxy_url = proxy_url
+    account.api_id = api_id
+    account.api_hash = api_hash
     await session.flush()
     return account
 
