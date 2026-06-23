@@ -53,12 +53,16 @@ class WarmupPlan:
     allow_saved: bool     # можно писать в Saved Messages (>= 12ч)
 
 
-def warmup_actions_for_age(hours: float) -> WarmupPlan:
+def warmup_actions_for_age(
+    hours: float, total_hours: float = WARMUP_TOTAL_HOURS
+) -> WarmupPlan:
     """Чистая функция: warmup-действия, разрешённые для аккаунта возраста `hours`.
 
-    Пороги — из таблицы §5.1 (через константы WARMUP_*).
+    `total_hours` — полная длительность warmup (по умолчанию WARMUP_TOTAL_HOURS;
+    вызывающий передаёт значение из settings_cache `warmup_duration_hours`, §4.9).
+    Суб-пороги — из констант WARMUP_* (§5.1, абсолютные часы).
     """
-    if hours >= WARMUP_TOTAL_HOURS:
+    if hours >= total_hours:
         return WarmupPlan(
             in_warmup=False,
             allow_subscribe=False,

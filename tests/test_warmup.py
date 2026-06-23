@@ -38,3 +38,20 @@ def test_warmup_finished_after_48h(hours):
     assert plan.allow_subscribe is False
     assert plan.allow_presence is False
     assert plan.allow_saved is False
+
+
+@pytest.mark.parametrize(
+    "hours,total,in_warmup",
+    [
+        (20.0, 24, True),    # короткий warmup (24ч): на 20ч ещё в прогреве
+        (24.0, 24, False),   # ровно total_hours → прогрев завершён
+        (25.0, 24, False),
+        (47.0, 72, True),    # длинный warmup (72ч): на 47ч ещё в прогреве (не 48)
+        (72.0, 72, False),
+    ],
+)
+def test_warmup_total_hours_param(hours, total, in_warmup):
+    """total_hours переопределяет порог завершения warmup (управляется /set
+    warmup_duration_hours через settings_cache, §4.9)."""
+    plan = warmup_actions_for_age(hours, total_hours=total)
+    assert plan.in_warmup is in_warmup

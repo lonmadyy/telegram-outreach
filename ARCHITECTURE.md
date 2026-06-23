@@ -454,6 +454,11 @@ CREATE TABLE settings (
 
 При изменении настройки через бот выполняется `pg_notify('settings_changed', key)`. Приложение слушает этот канал через `asyncpg.Connection.add_listener`, обновляет кэш в памяти. Так лимиты, интервалы, quiet hours меняются «на лету».
 
+`warmup_duration_hours` читается через `settings_cache` при создании аккаунта (env-значение —
+fallback), поэтому `/set` влияет на **новые** аккаунты (у уже заведённых `warmup_until`
+зафиксирован при создании и задним числом не меняется). Фаза «присутствия» во время прогрева
+использует то же значение (`warmup_actions_for_age(hours, total_hours)`).
+
 Дефолтные настройки заполняются при первой миграции:
 ```
 daily_dm_limit_warm = 40

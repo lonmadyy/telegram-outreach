@@ -17,6 +17,7 @@ from app.config import settings
 from app.db.models import AccountStatus
 from app.db.repositories import accounts as accounts_repo
 from app.db.repositories import logs as logs_repo
+from app.db.repositories.settings import settings_cache
 from app.db.session import session_scope
 from app.telegram.auth import (
     CodeExpiredError,
@@ -377,6 +378,11 @@ async def _save_account(message: Message, state: FSMContext, sess) -> None:
                 payload={"with_proxy": proxy_url is not None, "username": acc.username},
             )
         else:
+            # warmup_duration_hours — из горячего кэша настроек (§4.9, §5.1): /set
+            # действует на новые аккаунты. Env-значение остаётся fallback'ом.
+            warmup_hours = settings_cache.get_int(
+                "warmup_duration_hours", settings.warmup_duration_hours
+            )
             acc = await accounts_repo.create_account(
                 session,
                 phone=sess.phone,
@@ -387,14 +393,14 @@ async def _save_account(message: Message, state: FSMContext, sess) -> None:
                 proxy_url=proxy_url,
                 api_id=api_id,
                 api_hash=api_hash,
-                warmup_hours=settings.warmup_duration_hours,
+                warmup_hours=warmup_hours,
             )
             await logs_repo.log_event(
                 session,
                 level="info",
                 event_type="account_added",
                 account_id=acc.id,
-                message=f"Аккаунт {acc.phone} добавлен (warmup на {settings.warmup_duration_hours}ч)",
+                message=f"Аккаунт {acc.phone} добавлен (warmup на {warmup_hours}ч)",
                 payload={"with_proxy": proxy_url is not None, "username": acc.username},
             )
 

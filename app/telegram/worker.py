@@ -268,7 +268,10 @@ class WorkerAccount:
                 if account.created_at is not None
                 else float("inf")
             )
-            plan = warmup_mod.warmup_actions_for_age(hours)
+            total = settings_cache.get_int(
+                "warmup_duration_hours", warmup_mod.WARMUP_TOTAL_HOURS
+            )
+            plan = warmup_mod.warmup_actions_for_age(hours, total)
             if not plan.allow_presence:
                 return
             if random.random() < WARMUP_PRESENCE_PROB:
