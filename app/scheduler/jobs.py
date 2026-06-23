@@ -132,6 +132,15 @@ class SchedulerService:
             pass
         self._tracked_accounts.discard(account_id)
 
+    def reschedule_spamcheck_all(self) -> None:
+        """Перерегистрировать все spamcheck-задачи с актуальным
+        `spamcheck_interval_sec` из settings_cache (§7.5). Вызывается при изменении
+        настройки (`settings_changed`), чтобы новый интервал применился ко ВСЕМ
+        аккаунтам без рестарта (IntervalTrigger фиксируется при регистрации)."""
+        for account_id in list(self._tracked_accounts):
+            self.remove_spamcheck_for_account(account_id)
+            self.add_spamcheck_for_account(account_id)
+
     # ------------------ Job implementations ------------------
 
     async def _run_spamcheck(self, account_id: int, base_interval: int) -> None:

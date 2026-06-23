@@ -944,6 +944,7 @@ def parse_spambot_response(text: str) -> ParsedSpamStatus:
 Хотя 4 минуты — это частый интервал, сам факт обращения к боту не считается «спамом» (это публичный системный бот). Но во избежание собственного FloodWait на запросах:
 - Между разными аккаунтами обращения к SpamBot **разносятся** во времени: scheduler планирует их с offset (account.id % 240 секунд).
 - Если получили FloodWait от обращения к SpamBot — увеличиваем интервал для этого аккаунта вдвое до следующей успешной попытки.
+- `IntervalTrigger` задачи фиксируется при регистрации. При `/set spamcheck_interval_sec` колбэк `settings_changed` зовёт `SchedulerService.reschedule_spamcheck_all()` — все spamcheck-задачи перерегистрируются с новым интервалом без рестарта.
 
 ---
 

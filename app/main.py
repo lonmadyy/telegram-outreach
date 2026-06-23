@@ -42,11 +42,20 @@ def _run_migrations() -> None:
 
 async def _async_main() -> None:
     bot = None
-    listener = PubSubListener(SETTINGS_CHANNEL, settings_cache.invalidate)
     scheduler = SchedulerService(client_provider=worker_pool.get_client)
     # Дать bot-хендлерам доступ к scheduler'у (регистрация spamcheck для
     # аккаунтов, добавленных в рантайме без рестарта — MVP-5).
     set_scheduler(scheduler)
+
+    async def _on_settings_changed(key: str) -> None:
+        """Колбэк LISTEN settings_changed: обновить кэш и переинициализировать
+        зависимые подсистемы. spamcheck_interval_sec требует перерегистрации
+        задач, иначе новый интервал применится только к новым аккаунтам (§7.5)."""
+        await settings_cache.invalidate(key)
+        if key == "spamcheck_interval_sec":
+            scheduler.reschedule_spamcheck_all()
+
+    listener = PubSubListener(SETTINGS_CHANNEL, _on_settings_changed)
 
     try:
         # Шаг 3: настройки + LISTEN/NOTIFY.
