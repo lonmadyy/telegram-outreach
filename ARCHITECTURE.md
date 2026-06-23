@@ -477,6 +477,18 @@ warmup_duration_hours = 48
 adaptive_limit_reduction_days = 7
 ```
 
+Дополнительные ключи засеяны миграцией `0008` (код читал их из `settings_cache` с дефолтами,
+но в таблице их не было — теперь доступны через `/set` и видны в `/settings`):
+```
+flood_interval_min_sec = 450
+flood_interval_max_sec = 720
+flood_window_quorum_sec = 1800
+flood_window_adaptive_sec = 3600
+flood_adaptive_hold_sec = 3600
+peerflood_cooldown_hours = 3
+spamcheck_quiet_pause = true
+```
+
 ---
 
 ## 5. Антибан-стратегия
