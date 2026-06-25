@@ -638,10 +638,12 @@ except (UserPrivacyRestrictedError, UserNotMutualContactError) as e:
 
 Telegram MTProto оперирует не username'ами, а парами `(user_id, access_hash)`. Каждый `client.get_entity('@username')` вызывает RPC, и слишком частое такое — палится. Решение:
 
-- Таблица `peer_cache (username, user_id, access_hash, resolved_at)`.
-- При первой обработке username — `get_entity`, сохраняем в кэш.
-- При следующих обработках в той же кампании — используем кэш напрямую через `InputPeerUser(user_id, access_hash)`.
+- In-memory кэш (`app/telegram/peer_cache.py`), ключ — **`(account_id, username)`**.
+- При первой обработке username данным аккаунтом — `get_entity`, сохраняем в кэш.
+- При следующих обработках ТЕМ ЖЕ аккаунтом — используем кэш напрямую через `InputPeerUser(user_id, access_hash)`.
 - Кэш живёт 7 дней, потом считается устаревшим (юзер мог сменить username).
+
+**`access_hash` привязан к аккаунту** (его auth-key): hash, полученный аккаунтом A, невалиден для аккаунта B — Telegram вернёт `PEER_ID_INVALID` («An invalid Peer was used»). Поэтому ключ кэша включает `account_id`, и межаккаунтное переиспользование исключено. (Дедуп `processed_clients` и так обрабатывает каждого получателя один раз, поэтому потери от пер-аккаунтного ключа практически нет.)
 
 ### 5.5. Что мы НЕ делаем
 

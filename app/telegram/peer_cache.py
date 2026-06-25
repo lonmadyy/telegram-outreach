@@ -3,6 +3,10 @@
 Не палить ResolveUsername без необходимости: после первого `get_entity`
 сохраняем (user_id, access_hash) и переиспользуем через InputPeerUser.
 
+ВАЖНО: `access_hash` в Telegram привязан к запрашивающему аккаунту (его auth-key) —
+hash, полученный аккаунтом A, невалиден для аккаунта B (Telegram вернёт PEER_ID_INVALID).
+Поэтому кэш ключуется по `(account_id, username)`, а не по одному username.
+
 TTL — 7 дней (юзер мог сменить username). При истечении или сбое — повторный resolve.
 
 В MVP-2 кэш в памяти процесса. Сохранение снимка в БД — отложено (MVP-3+).
@@ -40,18 +44,21 @@ class CachedPeer:
 class PeerCache:
     def __init__(self, ttl_seconds: int = DEFAULT_TTL_SECONDS) -> None:
         self._ttl = ttl_seconds
-        self._by_username: dict[str, CachedPeer] = {}
+        # Ключ — (account_id, username): access_hash привязан к аккаунту.
+        self._by_key: dict[tuple[int, str], CachedPeer] = {}
         self._lock = asyncio.Lock()
 
     def _is_fresh(self, peer: CachedPeer) -> bool:
         return (time.time() - peer.resolved_at) < self._ttl
 
     async def get_or_resolve(
-        self, client: TelegramClient, username: str
+        self, client: TelegramClient, username: str, account_id: int
     ) -> CachedPeer | None:
-        """Возвращает CachedPeer или None если username не существует/невалиден."""
+        """Резолвит `username` ОТ ИМЕНИ `account_id` (access_hash валиден только
+        для него). Возвращает CachedPeer или None если username невалиден/не существует."""
+        key = (account_id, username)
         async with self._lock:
-            cached = self._by_username.get(username)
+            cached = self._by_key.get(key)
             if cached is not None and self._is_fresh(cached):
                 return cached
 
@@ -73,14 +80,14 @@ class PeerCache:
         )
 
         async with self._lock:
-            self._by_username[username] = peer
+            self._by_key[key] = peer
         return peer
 
-    async def invalidate(self, username: str) -> None:
+    async def invalidate(self, username: str, account_id: int) -> None:
         async with self._lock:
-            self._by_username.pop(username, None)
+            self._by_key.pop((account_id, username), None)
 
 
-# Глобальный singleton — один кэш на процесс (несколько worker-аккаунтов
-# могут резолвить одного и того же получателя).
+# Глобальный singleton — один кэш на процесс, ключ (account_id, username):
+# access_hash привязан к аккаунту, межаккаунтное переиспользование недопустимо.
 peer_cache = PeerCache()

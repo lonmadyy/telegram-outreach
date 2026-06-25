@@ -510,7 +510,7 @@ class WorkerAccount:
     ) -> None:
         """DM-путь §5.2 «Перед отправкой DM»."""
         # 1. Резолв peer.
-        peer = await peer_cache.get_or_resolve(self.client, username)
+        peer = await peer_cache.get_or_resolve(self.client, username, self.account_id)
         if peer is None:
             await self._record_skip(
                 task_id=task_id,
@@ -691,7 +691,7 @@ class WorkerAccount:
             invite_mod.participants_cache.mark_db_loaded(chat_id)
 
         # 3. Резолв получателя.
-        peer = await peer_cache.get_or_resolve(self.client, username)
+        peer = await peer_cache.get_or_resolve(self.client, username, self.account_id)
         if peer is None:
             await self._record_skip(
                 task_id=task_id,
