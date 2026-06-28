@@ -63,6 +63,43 @@ def test_russian_blocked_not_misread_as_no_limits():
     assert r.status != "no_limits"
 
 
+# --- реальные ответы SpamBot из прода, ранее падавшие в unknown ---
+
+
+def test_blocked_for_violations_is_permanent():
+    # Жёсткий бан по жалобам без даты автоснятия → permanent (set_dead).
+    r = parse_spambot_response(
+        "Your account was blocked for violations of the "
+        "[Telegram Terms of Service](https://telegram.org/tos) "
+        "based on user reports confirmed by our moderators."
+    )
+    assert r.status == "permanent"
+
+
+def test_dateless_limited_is_temporary_with_fallback():
+    # Лимит без даты автоснятия → temporary, дату не распознаём (fallback в реакции).
+    r = parse_spambot_response(
+        "Hello Arseniy! I’m very sorry that you had to contact me. Unfortunately, "
+        "some actions can trigger a harsh response from our anti-spam systems. "
+        "While the account is limited, you will not be able to send messages to "
+        "people who do not have your number in their phone contacts or add them "
+        "to groups and channels."
+    )
+    assert r.status == "temporary"
+    assert r.unlock_at is None
+
+
+def test_limited_with_date_still_wins_over_dateless_rule():
+    # Лимит С датой → правило даты приоритетнее нового бездатного «limited».
+    r = parse_spambot_response(
+        "I’m afraid some Telegram users found your messages annoying and forwarded "
+        "them to our team of moderators. The moderators have confirmed the report "
+        "and your account is now limited until 29 Jun 2026, 08:26 UTC."
+    )
+    assert r.status == "temporary"
+    assert r.unlock_at is not None
+
+
 # --- peerflood_cooldown_active (§6.5 кулдаун PeerFlood-карантина) ---
 
 

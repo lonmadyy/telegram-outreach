@@ -917,8 +917,12 @@ def parse_spambot_response(text: str) -> ParsedSpamStatus:
         unlock_at = parse_datetime(m.group(1))
         return ParsedSpamStatus('temporary', unlock_at=unlock_at)
     
-    # 2. Бессрочный блок
-    if any(k in lower for k in ['permanently', 'unable to lift', 'навсегда']):
+    # 2. Бессрочный блок. 'blocked for violations' — жёсткий бан по жалобам
+    # («…confirmed by our moderators») без даты автоснятия; temporary-бан
+    # «…until DATE…» уже отсеян блоком 1.
+    if any(k in lower for k in [
+        'permanently', 'unable to lift', 'навсегда', 'blocked for violations'
+    ]):
         return ParsedSpamStatus('permanent')
     
     # 3. Чисто
@@ -934,7 +938,14 @@ def parse_spambot_response(text: str) -> ParsedSpamStatus:
     if 'свобод' in lower and 'ограничен' in lower:
         return ParsedSpamStatus('no_limits')
     
-    # 4. Soft warning ("some users may consider your messages as spam")
+    # 4. Бездатный лимит ("…the account is limited, you will not be able to send
+    # messages…") — реальный ответ SpamBot без даты автоснятия. unlock_at не задаём
+    # → resolve_temporary_unlock даст fallback DEFAULT_TEMP_BLOCK_HOURS. Лимит С датой
+    # уже обработан блоком 1, no_limits — блоком 3.
+    if 'limited' in lower:
+        return ParsedSpamStatus('temporary')
+    
+    # 5. Soft warning ("some users may consider your messages as spam")
     if 'spam' in lower and 'may' in lower:
         return ParsedSpamStatus('soft_warning')
     
@@ -947,8 +958,8 @@ def parse_spambot_response(text: str) -> ParsedSpamStatus:
 
 | Был | Стал | Действие |
 |---|---|---|
-| `no_limits` или `soft_warning` | `temporary` | `status = spam_blocked`, `spam_unlock_at = parsed.unlock_at` |
-| любой | `permanent` | `status = dead`, уведомление админу: «Аккаунт перманентно ограничен» |
+| `no_limits` или `soft_warning` | `temporary` | `status = spam_blocked`, `spam_unlock_at = parsed.unlock_at` (бездатный лимит → fallback `DEFAULT_TEMP_BLOCK_HOURS`) |
+| любой | `permanent` | `status = dead`, уведомление админу: «Аккаунт перманентно ограничен» (вкл. «blocked for violations… confirmed by moderators») |
 | `temporary` или `spam_blocked` | `no_limits` | `status = active`, `spam_unlock_at = NULL`, `limit_reduced_until = NULL` |
 | любой | `soft_warning` | продолжаем работу, флагуется в логах, не меняет статус |
 | любой | `unknown` | логируется, статус не меняется |

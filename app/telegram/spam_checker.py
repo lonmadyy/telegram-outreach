@@ -2,10 +2,11 @@
 
 Парсер ответов (§7.3) — приоритетный pattern matching:
   1. Жёсткий блок с датой → temporary + unlock_at
-  2. permanently / unable to lift / навсегда → permanent
+  2. permanently / unable to lift / навсегда / blocked for violations → permanent
   3. good news / no limits / нет ограничений / «свободен от ограничений» → no_limits
-  4. spam + may → soft_warning
-  5. ничего не совпало → unknown
+  4. limited (бездатный лимит) → temporary (fallback-дата)
+  5. spam + may → soft_warning
+  6. ничего не совпало → unknown
 
 Реакция на смену статуса (§7.4) делает state-transitions accounts:
   • temporary → set_spam_blocked со spam_unlock_at из ответа
@@ -108,8 +109,18 @@ def parse_spambot_response(text: str) -> ParsedSpamStatus:
             logger.debug("SpamBot date parse failed: {!r}", m.group(1))
         return ParsedSpamStatus("temporary", unlock_at=unlock_at)
 
-    # 2. Бессрочный блок.
-    if any(k in lower for k in ("permanently", "unable to lift", "навсегда")):
+    # 2. Бессрочный блок. «blocked for violations… confirmed by moderators» —
+    # жёсткий бан по жалобам без даты автоснятия (temporary-бан «…until DATE…» уже
+    # отсеян блоком 1). Эскалируем в permanent → set_dead + уведомление (§7.4).
+    if any(
+        k in lower
+        for k in (
+            "permanently",
+            "unable to lift",
+            "навсегда",
+            "blocked for violations",
+        )
+    ):
         return ParsedSpamStatus("permanent")
 
     # 3. Чисто (нет ограничений). Английские и русские формулировки.
@@ -133,7 +144,15 @@ def parse_spambot_response(text: str) -> ParsedSpamStatus:
     if "свобод" in lower and "ограничен" in lower:
         return ParsedSpamStatus("no_limits")
 
-    # 4. Soft warning.
+    # 4. Бездатный лимит: «…the account is limited, you will not be able to send
+    # messages to people who do not have your number…» — реальный ответ SpamBot без
+    # даты автоснятия. unlock_at не задаём → resolve_temporary_unlock даст fallback
+    # DEFAULT_TEMP_BLOCK_HOURS, аккаунт уходит в карантин (§7.3). Лимит с датой уже
+    # обработан блоком 1; no_limits — блоком 3, поэтому «no limits» сюда не дойдёт.
+    if "limited" in lower:
+        return ParsedSpamStatus("temporary")
+
+    # 5. Soft warning.
     if "spam" in lower and "may" in lower:
         return ParsedSpamStatus("soft_warning")
 
