@@ -36,6 +36,7 @@ def main_menu() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="Аккаунты", callback_data="menu:accounts")],
             [InlineKeyboardButton(text="Шаблоны", callback_data="menu:templates")],
             [InlineKeyboardButton(text="Новая кампания", callback_data="menu:new_campaign")],
+            [InlineKeyboardButton(text="Кампании", callback_data="menu:campaigns")],
             [InlineKeyboardButton(text="Статус", callback_data="menu:status")],
             [InlineKeyboardButton(text="Настройки", callback_data="menu:settings")],
         ]

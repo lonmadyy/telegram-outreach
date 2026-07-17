@@ -37,7 +37,7 @@ router = Router(name="campaigns")
 
 
 @router.message(Command("campaigns"))
-@router.callback_query(F.data == "menu:status")
+@router.callback_query(F.data == "menu:campaigns")
 async def list_campaigns(event) -> None:
     async with session_scope() as session:
         items = await campaigns_repo.list_campaigns(session, limit=15)
@@ -453,4 +453,20 @@ async def cmd_stop(message: Message) -> None:
         return
     campaign_id = int(parts[1].strip())
     ok, msg = await campaign_manager.stop_campaign(campaign_id)
+    await message.answer(msg, reply_markup=main_menu())
+
+
+@router.message(Command("reactivate"))
+async def cmd_reactivate(message: Message) -> None:
+    if message.text is None:
+        return
+    parts = message.text.split(maxsplit=1)
+    if len(parts) < 2 or not parts[1].strip().isdigit():
+        await message.answer(
+            "Использование: <code>/reactivate &lt;campaign_id&gt;</code>\n"
+            "Возвращает <b>отменённую</b> кампанию в работу — воркеры добьют её очередь."
+        )
+        return
+    campaign_id = int(parts[1].strip())
+    ok, msg = await campaign_manager.reactivate_campaign(campaign_id)
     await message.answer(msg, reply_markup=main_menu())

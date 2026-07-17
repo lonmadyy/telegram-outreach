@@ -450,6 +450,94 @@ async def _save_account(message: Message, state: FSMContext, sess) -> None:
 
 
 # ---------------------------------------------------------------------------
+# /set_proxy — задать/сменить/снять прокси у существующего аккаунта (§10.2).
+# ---------------------------------------------------------------------------
+
+
+@router.message(Command("set_proxy"))
+async def cmd_set_proxy(message: Message) -> None:
+    if message.text is None:
+        return
+    parts = message.text.split(maxsplit=2)
+    if len(parts) < 3:
+        await message.answer(
+            "Использование: <code>/set_proxy &lt;phone|id&gt; &lt;proxy_url|none&gt;</code>\n\n"
+            "Примеры:\n"
+            "• <code>/set_proxy 8 socks5://user:pass@host:port</code>\n"
+            "• <code>/set_proxy +79991234567 none</code> — снять прокси\n\n"
+            "Форматы прокси — как при добавлении аккаунта (socks5/mtproto/tg://).",
+            reply_markup=main_menu(),
+        )
+        return
+
+    ref = parse_account_ref(parts[1])
+    if ref is None:
+        await message.answer(
+            "Не распознал аккаунт. Укажите phone (<code>+7…</code>) или id.",
+            reply_markup=main_menu(),
+        )
+        return
+
+    raw_proxy = parts[2].strip()
+    if raw_proxy.lower() in ("none", "skip", "-", "нет", "убрать", "снять"):
+        proxy_url: str | None = None
+    else:
+        proxy_url = raw_proxy
+        try:
+            parse_proxy(proxy_url)
+        except ValueError as e:
+            await message.answer(
+                f"Невалидный прокси: {e}. Проверьте формат и повторите.",
+                reply_markup=main_menu(),
+            )
+            return
+
+    # В прокси-URL может быть пароль — убираем команду из чата (best-effort).
+    try:
+        await message.delete()
+    except Exception:
+        pass
+
+    kind, val = ref
+    async with session_scope() as session:
+        if kind == "id":
+            acc = await accounts_repo.get_by_id(session, int(val))
+        else:
+            acc = await accounts_repo.get_by_phone(session, str(val))
+    if acc is None:
+        await message.answer(f"Аккаунт <code>{val}</code> не найден.", reply_markup=main_menu())
+        return
+
+    async with session_scope() as session:
+        await accounts_repo.set_proxy(session, account_id=acc.id, proxy_url=proxy_url)
+
+    # Применяем немедленно, если воркер жив: перезапуск с новым прокси. Для
+    # dead/disabled воркера нет — прокси применится при следующем запуске.
+    if worker_pool.get_client(acc.id) is not None:
+        try:
+            await worker_pool.stop_for(acc.id)
+            async with session_scope() as session:
+                fresh = await accounts_repo.get_by_id(session, acc.id)
+            worker = await worker_pool.start_for(fresh) if fresh is not None else None
+            applied = (
+                " Воркер перезапущен с новым прокси."
+                if worker is not None
+                else " ⚠ Воркер не поднялся с новым прокси — проверьте адрес."
+            )
+        except Exception:
+            logger.exception("set_proxy: restart worker failed for {}", acc.id)
+            applied = " ⚠ Ошибка перезапуска воркера, прокси сохранён в БД."
+    else:
+        applied = " Применится при следующем запуске воркера."
+
+    verb = "снят" if proxy_url is None else "обновлён"
+    await message.answer(
+        f"Прокси для <b>{acc.phone}</b> (#{acc.id}) {verb}.{applied}",
+        reply_markup=main_menu(),
+    )
+
+
+# ---------------------------------------------------------------------------
 # /remove_account — мягкое удаление аккаунта (§10.2). Деструктивно → подтверждение.
 # ---------------------------------------------------------------------------
 

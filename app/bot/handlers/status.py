@@ -41,6 +41,14 @@ def _fmt_account_brief(acc: Account, last_check: str | None) -> str:
     return " · ".join(parts)
 
 
+@router.callback_query(F.data == "menu:status")
+async def cb_status(query: CallbackQuery) -> None:
+    """Кнопка «Статус» из главного меню → та же сводка, что и /status."""
+    await query.answer()
+    if query.message is not None:
+        await cmd_status(query.message)
+
+
 @router.message(Command("status"))
 async def cmd_status(message: Message) -> None:
     async with session_scope() as session:

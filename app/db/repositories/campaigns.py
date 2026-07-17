@@ -71,6 +71,10 @@ async def set_status(
     values: dict = {"status": status}
     if status == CampaignStatus.running:
         values["started_at"] = datetime.now(timezone.utc)
+        # Возврат в работу (в т.ч. реактивация отменённой) снимает штамп завершения
+        # и причину паузы, иначе кампания выглядит «завершённой», будучи running.
+        values["finished_at"] = None
+        values["paused_reason"] = None
     if mark_finished or status in {
         CampaignStatus.done,
         CampaignStatus.failed,

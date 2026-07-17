@@ -106,6 +106,34 @@ async def resume_campaign(campaign_id: int) -> tuple[bool, str]:
     return await start_campaign(campaign_id)
 
 
+async def reactivate_campaign(campaign_id: int) -> tuple[bool, str]:
+    """Вернуть отменённую кампанию в работу: cancelled → running (§10.4).
+
+    Задачи в `queued` сохраняются — их подхватит долгоживущий WorkerPool. Только
+    из `cancelled` (для paused есть resume, для завершённых реактивация не нужна).
+    """
+    async with session_scope() as session:
+        campaign = await campaigns_repo.get_by_id(session, campaign_id)
+        if campaign is None:
+            return False, "Кампания не найдена"
+        if campaign.status != CampaignStatus.cancelled:
+            return (
+                False,
+                f"Реактивировать можно только отменённую (сейчас {campaign.status.value})",
+            )
+        await campaigns_repo.set_status(
+            session, campaign_id=campaign_id, status=CampaignStatus.running
+        )
+        await logs_repo.log_event(
+            session,
+            level="info",
+            event_type="campaign_reactivated",
+            campaign_id=campaign_id,
+            message=f"Кампания #{campaign_id} возвращена в работу (cancelled → running)",
+        )
+    return True, f"Кампания #{campaign_id} возвращена в работу. Воркеры подхватят задачи."
+
+
 async def stop_campaign(campaign_id: int) -> tuple[bool, str]:
     async with session_scope() as session:
         campaign = await campaigns_repo.get_by_id(session, campaign_id)

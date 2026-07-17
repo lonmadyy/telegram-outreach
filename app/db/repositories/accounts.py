@@ -219,6 +219,19 @@ async def set_disabled(session: AsyncSession, *, account_id: int) -> None:
     )
 
 
+async def set_proxy(
+    session: AsyncSession, *, account_id: int, proxy_url: str | None
+) -> None:
+    """Сменить прокси аккаунта (§10.2). Живой воркер подхватит новый прокси только
+    после перезапуска (клиент Telethon держит соединение через старый прокси) —
+    перезапуск делает вызывающий хендлер."""
+    await session.execute(
+        update(Account)
+        .where(Account.id == account_id)
+        .values(proxy_url=proxy_url)
+    )
+
+
 # ---------------------------------------------------------------------------
 # Лимиты и счётчики. §5.1 «Дневные лимиты», §6.5.
 # ---------------------------------------------------------------------------
