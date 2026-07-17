@@ -511,24 +511,29 @@ async def cmd_set_proxy(message: Message) -> None:
     async with session_scope() as session:
         await accounts_repo.set_proxy(session, account_id=acc.id, proxy_url=proxy_url)
 
-    # Применяем немедленно, если воркер жив: перезапуск с новым прокси. Для
-    # dead/disabled воркера нет — прокси применится при следующем запуске.
-    if worker_pool.get_client(acc.id) is not None:
+    # Применяем немедленно. Рабочий аккаунт (не dead/disabled) поднимаем или
+    # перезапускаем с новым прокси — это оживляет и аккаунт, чей воркер стоял
+    # из-за мёртвого прокси. Для dead/disabled воркера нет — прокси применится
+    # при реактивации через /add_account.
+    if acc.status in (AccountStatus.dead, AccountStatus.disabled):
+        applied = " Аккаунт dead/disabled — прокси применится при реактивации."
+    else:
         try:
-            await worker_pool.stop_for(acc.id)
+            if worker_pool.get_client(acc.id) is not None:
+                await worker_pool.stop_for(acc.id)
             async with session_scope() as session:
                 fresh = await accounts_repo.get_by_id(session, acc.id)
             worker = await worker_pool.start_for(fresh) if fresh is not None else None
-            applied = (
-                " Воркер перезапущен с новым прокси."
-                if worker is not None
-                else " ⚠ Воркер не поднялся с новым прокси — проверьте адрес."
-            )
+            if worker is not None:
+                sched = get_scheduler()
+                if sched is not None:
+                    sched.add_spamcheck_for_account(acc.id)
+                applied = " Воркер поднят с новым прокси."
+            else:
+                applied = " ⚠ Воркер не поднялся (прокси недоступен?) — проверьте адрес."
         except Exception:
-            logger.exception("set_proxy: restart worker failed for {}", acc.id)
-            applied = " ⚠ Ошибка перезапуска воркера, прокси сохранён в БД."
-    else:
-        applied = " Применится при следующем запуске воркера."
+            logger.exception("set_proxy: (re)start worker failed for {}", acc.id)
+            applied = " ⚠ Ошибка запуска воркера, прокси сохранён в БД."
 
     verb = "снят" if proxy_url is None else "обновлён"
     await message.answer(
