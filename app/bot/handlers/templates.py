@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
+from html import escape as html_escape
+
 from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import BufferedInputFile, CallbackQuery, Message
 from loguru import logger
 
 from app.bot import formatting as fmt
-from app.bot.keyboards import cancel_kb, confirm_kb, main_menu
+from app.bot.keyboards import cancel_kb, confirm_kb, main_menu, templates_view_kb
 from app.bot.states import NewTemplate
 from app.campaigns.template_engine import (
     TemplateError,
@@ -46,13 +48,57 @@ async def list_templates(event) -> None:
     lines = [fmt.section_header("📝", "Шаблоны", str(len(items)))]
     for t in items:
         used_vars = ", ".join(t.variables) if t.variables else "—"
-        head = t.body.replace("\n", " ")[:80]
+        head = html_escape(t.body.replace("\n", " ")[:80])
         lines.append(
             f"📄 <b>#{t.id} · {t.name}</b>\n"
-            f"    Переменные: {used_vars}\n"
-            f"    <code>{head}</code>"
+            f"    Переменные: {used_vars} · {len(t.body)} симв.\n"
+            f"    <code>{head}…</code>"
         )
-    await target.answer("\n\n".join(lines), reply_markup=main_menu())
+    lines.append("\n<i>Нажмите 👁, чтобы увидеть шаблон целиком.</i>")
+    await target.answer("\n\n".join(lines), reply_markup=templates_view_kb(items))
+
+
+@router.callback_query(F.data.startswith("tpl:view:"))
+async def on_template_view(query: CallbackQuery) -> None:
+    """Показать шаблон целиком (§8.4): необрезанное тело + один пример отправки.
+    Тело длиннее лимита сообщения отдаём файлом."""
+    raw = (query.data or "").removeprefix("tpl:view:")
+    try:
+        tpl_id = int(raw)
+    except ValueError:
+        await query.answer("Битый id", show_alert=True)
+        return
+    async with session_scope() as session:
+        template = await templates_repo.get_by_id(session, tpl_id)
+    if template is None:
+        await query.answer("Шаблон не найден", show_alert=True)
+        return
+    await query.answer()
+    if query.message is None:
+        return
+
+    used_vars = ", ".join(template.variables) if template.variables else "—"
+    header = (
+        f"📄 <b>#{template.id} · {template.name}</b>\n"
+        f"Переменные: {used_vars} · длина {len(template.body)} симв."
+    )
+    sample = html_escape(preview(template.body, n=1)[0])
+    full = (
+        f"{header}\n\n<b>Тело (как введено):</b>\n"
+        f"<pre>{html_escape(template.body)}</pre>\n\n"
+        f"<b>Пример отправки:</b>\n{sample}"
+    )
+    if len(full) <= 4000:
+        await query.message.answer(full, reply_markup=main_menu())
+        return
+    # Слишком длинное для одного сообщения — тело отдаём файлом.
+    await query.message.answer(
+        f"{header}\n\n<b>Пример отправки:</b>\n{sample}", reply_markup=main_menu()
+    )
+    doc = BufferedInputFile(
+        template.body.encode("utf-8"), filename=f"template_{template.id}.txt"
+    )
+    await query.message.answer_document(doc, caption="Тело шаблона (необрезанное)")
 
 
 @router.message(Command("new_template"))

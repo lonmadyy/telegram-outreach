@@ -76,6 +76,14 @@ async def cmd_cancel(message: Message, state: FSMContext) -> None:
     await message.answer("Сценарий отменён.", reply_markup=main_menu())
 
 
+@router.callback_query(F.data == "menu:back")
+async def cb_menu_back(query: CallbackQuery) -> None:
+    """Вернуться в главное меню из инлайн-экранов (напр. список шаблонов)."""
+    await query.answer()
+    if query.message is not None:
+        await query.message.answer("Действия:", reply_markup=main_menu())
+
+
 @router.callback_query(F.data == "cancel")
 async def cb_cancel(query: CallbackQuery, state: FSMContext) -> None:
     await state.clear()

@@ -94,3 +94,18 @@ def templates_picker_kb(templates: list) -> InlineKeyboardMarkup:
     ]
     rows.append([InlineKeyboardButton(text="Отмена", callback_data="cancel")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def templates_view_kb(templates: list) -> InlineKeyboardMarkup:
+    """Список шаблонов с кнопкой «показать целиком» на каждый (§8.4, §10.6)."""
+    rows = [
+        [
+            InlineKeyboardButton(
+                text=f"👁 #{t.id} · {t.name}"[:60],
+                callback_data=f"tpl:view:{t.id}",
+            )
+        ]
+        for t in templates
+    ]
+    rows.append([InlineKeyboardButton(text="☰ Меню", callback_data="menu:back")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
