@@ -12,6 +12,7 @@ from app.bot.handlers import accounts as accounts_handlers
 from app.bot.handlers import campaigns as campaigns_handlers
 from app.bot.handlers import common as common_handlers
 from app.bot.handlers import export as export_handlers
+from app.bot.handlers import parsing as parsing_handlers
 from app.bot.handlers import settings as settings_handlers
 from app.bot.handlers import status as status_handlers
 from app.bot.handlers import templates as templates_handlers
@@ -42,6 +43,7 @@ def build_dispatcher() -> Dispatcher:
     dp.include_router(templates_handlers.router)
     dp.include_router(campaigns_handlers.router)
     dp.include_router(export_handlers.router)
+    dp.include_router(parsing_handlers.router)
     dp.include_router(settings_handlers.router)
     dp.include_router(status_handlers.router)
 

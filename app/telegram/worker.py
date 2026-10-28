@@ -134,6 +134,8 @@ class WorkerAccount:
         # invite-кампании, в чат которых он не может приглашать). Передаётся в
         # claim_next_task как exclude_campaign_ids, чтобы не зацикливаться.
         self._ineligible_campaigns: set[int] = set()
+        # Аккаунт занят парсингом групп (§20.2): живёт, но новых задач не берёт.
+        self.on_hold = False
 
     # ------------------ Lifecycle ------------------
 
@@ -417,6 +419,11 @@ class WorkerAccount:
         # Лёгкое присутствие во время warmup и в периоды с ненулевым лимитом (§5.1).
         if in_warmup:
             await self._maybe_warmup_presence(account)
+
+        # 4b. Парсинг групп на этом аккаунте (§20.2) — задачи не берём, ждём.
+        if self.on_hold:
+            await self._sleep(IDLE_POLL_SECONDS)
+            return
 
         # 5. Захват задачи (SKIP LOCKED). Исключаем кампании, для которых этот
         # аккаунт признан непригодным (invite без прав/членства, §5.3), и

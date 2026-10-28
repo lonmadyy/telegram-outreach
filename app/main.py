@@ -4,7 +4,7 @@
   1. setup_logging
   2. alembic upgrade head
   3. settings_cache.refresh_all + PubSubListener('settings_changed')
-  4. recover_stuck_in_progress (§9.3)
+  4. recover_stuck_in_progress (§9.3) + оборванные парсинги групп (§20)
   5. WorkerPool.start_all для всех не-disabled/dead аккаунтов
   6. Scheduler.start + add_spamcheck_for_account для каждого аккаунта (§7.5)
   7. aiogram polling
@@ -26,6 +26,7 @@ from app.bot.main import build_bot, build_dispatcher
 from app.campaigns.manager import recover_at_startup
 from app.db.repositories.settings import settings_cache
 from app.db.session import dispose_engine
+from app.parsing.runner import recover_parse_jobs
 from app.scheduler.jobs import SchedulerService, set_scheduler
 from app.telegram.worker_pool import worker_pool
 from app.utils.logging import setup_logging
@@ -64,6 +65,7 @@ async def _async_main() -> None:
 
         # Шаг 4: recovery зависших задач.
         await recover_at_startup()
+        await recover_parse_jobs()  # §20: оборванные рестартом парсинги → interrupted
 
         # Шаг 5: пул воркеров.
         started = await worker_pool.start_all()

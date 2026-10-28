@@ -399,3 +399,52 @@ class InvitedParticipant(Base):
     )
 
     __table_args__ = (Index("idx_invited_chat", "chat_id"),)
+
+
+class ParseJob(Base):
+    """Задание парсинга групп (/parse). ARCHITECTURE.md §4.10, §20.
+
+    status: running → done | stopped | failed | interrupted (рестарт посреди работы).
+    groups — исходные токены [[kind, value], …]; report — сводка по группам (по мере
+    прохождения); dropped — счётчики отсева по причинам.
+    """
+
+    __tablename__ = "parse_jobs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    account_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("accounts.id", ondelete="SET NULL")
+    )
+    chat_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default="running"
+    )
+    groups: Mapped[list] = mapped_column(JSONB, nullable=False)
+    options: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    report: Mapped[list] = mapped_column(
+        JSONB, nullable=False, server_default=text("'[]'::jsonb")
+    )
+    dropped: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, server_default=text("'{}'::jsonb")
+    )
+    error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class ParseResult(Base):
+    """Собранные usernames (lower, без @) по группам задания. §4.10.
+
+    PK (job_id, group_idx, username) — дедуп внутри группы на уровне БД; общий
+    дедуп между группами — при выдаче (app/parsing/collector.build_outputs).
+    """
+
+    __tablename__ = "parse_results"
+
+    job_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("parse_jobs.id", ondelete="CASCADE"), primary_key=True
+    )
+    group_idx: Mapped[int] = mapped_column(Integer, primary_key=True)
+    username: Mapped[str] = mapped_column(String(64), primary_key=True)

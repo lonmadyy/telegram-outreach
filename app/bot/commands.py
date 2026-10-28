@@ -20,6 +20,8 @@ BOT_COMMANDS: list[BotCommand] = [
     BotCommand(command="new_template", description="Создать шаблон"),
     BotCommand(command="new_campaign", description="Новая кампания (рассылка/инвайт)"),
     BotCommand(command="campaigns", description="Список кампаний"),
+    BotCommand(command="parse", description="Парсинг групп: собрать @username"),
+    BotCommand(command="parses", description="Результаты прошлых парсингов"),
     BotCommand(command="pause", description="Пауза кампании (id)"),
     BotCommand(command="resume", description="Возобновить кампанию (id)"),
     BotCommand(command="stop", description="Остановить кампанию (id)"),

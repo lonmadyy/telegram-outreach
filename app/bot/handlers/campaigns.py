@@ -29,6 +29,7 @@ from app.db.models import CampaignType
 from app.db.repositories import campaigns as campaigns_repo
 from app.db.repositories import templates as templates_repo
 from app.db.session import session_scope
+from app.parsing.results import load_outputs as load_parse_outputs
 from app.telegram import invite as invite_mod
 from app.telegram.worker_pool import worker_pool
 from app.utils.txt_parser import parse_txt_usernames
@@ -91,6 +92,15 @@ async def on_campaign_type(query: CallbackQuery, state: FSMContext) -> None:
 
     ctype = CampaignType.message if choice == "message" else CampaignType.invite
     await state.update_data(campaign_type=ctype.value)
+
+    # Переход из итога парсинга (§20.3): список уже есть — файл не просим.
+    parse_job_id = (await state.get_data()).get("prefill_parse_job")
+    if parse_job_id is not None:
+        await query.answer()
+        if query.message is not None:
+            await _prefill_from_parse(query.message, state, int(parse_job_id))
+        return
+
     await state.set_state(NewCampaign.waiting_txt)
     if query.message is not None:
         await query.message.answer(
@@ -153,12 +163,31 @@ async def on_campaign_txt(message: Message, state: FSMContext) -> None:
         await state.clear()
         return
 
-    await state.update_data(usernames=valid, invalid_count=len(invalid))
+    await _ask_resend(message, state, valid, len(invalid))
+
+
+async def _prefill_from_parse(message: Message, state: FSMContext, job_id: int) -> None:
+    loaded = await load_parse_outputs(job_id)
+    if loaded is None or not loaded[1].all_usernames:
+        await state.clear()
+        await message.answer(
+            f"В парсинге #{job_id} нет подходящих @username.", reply_markup=main_menu()
+        )
+        return
+    valid, invalid = parse_txt_usernames(loaded[1].all_txt.decode("utf-8"))
+    await _ask_resend(message, state, valid, len(invalid))
+
+
+async def _ask_resend(
+    message: Message, state: FSMContext, valid: list[str], invalid_count: int
+) -> None:
+    """Сводка по списку получателей + вопрос про ранее обработанных (§10.4)."""
+    await state.update_data(usernames=valid, invalid_count=invalid_count)
 
     txt = (
         f"<b>Парсинг файла:</b>\n"
         f"• Валидных username: <b>{len(valid)}</b>\n"
-        f"• Невалидных строк: {len(invalid)}\n\n"
+        f"• Невалидных строк: {invalid_count}\n\n"
         "Что делать с теми, кому уже когда-либо писали (записи в "
         "<code>processed_clients</code>)?\n\n"
         "• <b>Продолжить</b> — пропустить ВСЕХ, кто был обработан хоть когда-то.\n"

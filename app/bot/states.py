@@ -27,3 +27,10 @@ class NewCampaign(StatesGroup):
     waiting_template = State()       # только для message
     waiting_target_chat = State()    # только для invite (§10.4)
     waiting_confirm = State()
+
+
+class ParseGroups(StatesGroup):
+    waiting_groups = State()
+    waiting_account = State()
+    waiting_options = State()
+    waiting_msg_limit = State()

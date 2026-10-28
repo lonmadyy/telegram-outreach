@@ -24,6 +24,9 @@ class WorkerPool:
     def __init__(self) -> None:
         self._workers: dict[int, WorkerAccount] = {}
         self._lock = asyncio.Lock()
+        # Аккаунты на hold (идёт парсинг групп, §20.2). Хранится в пуле, а не только
+        # в воркере, чтобы пережить перезапуск воркера (/set_proxy и т.п.).
+        self._held: set[int] = set()
 
     async def start_for(self, account: Account) -> WorkerAccount | None:
         """Создаёт и запускает воркер для аккаунта. Уже запущенные пропускаются."""
@@ -51,6 +54,7 @@ class WorkerPool:
                 return None
 
             worker = WorkerAccount(account_id=account.id, client=client)
+            worker.on_hold = account.id in self._held
             self._workers[account.id] = worker
             worker.start()
             logger.info(
@@ -95,6 +99,16 @@ class WorkerPool:
         if worker is None:
             return None
         return worker.client
+
+    def set_hold(self, account_id: int, on: bool) -> None:
+        """Снять аккаунт с рассылки на время парсинга (on=True) / вернуть (§20.2)."""
+        if on:
+            self._held.add(account_id)
+        else:
+            self._held.discard(account_id)
+        worker = self._workers.get(account_id)
+        if worker is not None:
+            worker.on_hold = on
 
     def all_account_ids(self) -> list[int]:
         return list(self._workers.keys())
