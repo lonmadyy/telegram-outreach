@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from typing import Annotated
+
 from pydantic import Field, field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -19,8 +21,9 @@ class Settings(BaseSettings):
     tg_api_hash: str
     bot_token: str
 
-    # Admin
-    allowed_user_ids: list[int]
+    # Admin. NoDecode: иначе pydantic-settings читает список как JSON и падает на
+    # «123,456» ещё до _parse_user_ids (с одним id ошибка не видна).
+    allowed_user_ids: Annotated[list[int], NoDecode]
 
     # Database
     postgres_host: str = "db"
