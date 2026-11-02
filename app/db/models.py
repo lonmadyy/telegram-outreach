@@ -140,6 +140,9 @@ class Account(Base):
     # должен оставаться неизменным весь срок жизни аккаунта.
     api_id: Mapped[int | None] = mapped_column(Integer)
     api_hash: Mapped[str | None] = mapped_column(String(64))
+    # Постоянный профиль устройства (§21.2): device_model, system_version, app_version,
+    # lang_code, system_lang_code, lang_pack. NULL → прежние общие параметры клиента.
+    device: Mapped[dict | None] = mapped_column(JSONB)
     status: Mapped[AccountStatus] = mapped_column(
         account_status_enum, nullable=False, server_default=AccountStatus.warmup.value
     )
@@ -274,6 +277,10 @@ class Campaign(Base):
     notes: Mapped[str | None] = mapped_column(Text)
     # Причина паузы (§5.3): 'global_flood' → авто-возобновление джобой. NULL = прочее.
     paused_reason: Mapped[str | None] = mapped_column(String(32))
+    # Кампания создана из итога /parse (§21.1): получатели ищутся в исходных группах.
+    source_parse_job_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("parse_jobs.id", ondelete="SET NULL")
+    )
 
     __table_args__ = (
         Index(
@@ -448,3 +455,22 @@ class ParseResult(Base):
     )
     group_idx: Mapped[int] = mapped_column(Integer, primary_key=True)
     username: Mapped[str] = mapped_column(String(64), primary_key=True)
+
+
+class ChatMemberLoad(Base):
+    """Когда загружен снимок участников целевого чата. ARCHITECTURE.md §4.11, §21.4."""
+
+    __tablename__ = "chat_member_loads"
+
+    chat_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    loaded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    members: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
+class ChatMember(Base):
+    """Снимок участников целевого чата инвайт-кампании (user_id). §4.11, §21.4."""
+
+    __tablename__ = "chat_members"
+
+    chat_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)

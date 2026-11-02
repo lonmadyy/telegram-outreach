@@ -24,7 +24,12 @@ from telethon.errors import (
 )
 from telethon.tl.types import User
 
-from app.telegram.client_factory import create_client, normalize_phone
+from app.telegram.client_factory import (
+    create_client,
+    effective_api_credentials,
+    normalize_phone,
+)
+from app.telegram.fingerprint import make_device
 
 
 TIMEOUT_SECONDS = 10 * 60  # 10 минут на всю авторизацию
@@ -76,6 +81,7 @@ class AuthSession:
     proxy_url: str | None = None
     started_at: float = field(default_factory=time.time)
     me: User | None = None
+    device: dict | None = None  # профиль устройства, с которым идёт вход (§21.2)
 
     def is_expired(self) -> bool:
         return time.time() - self.started_at > TIMEOUT_SECONDS
@@ -139,8 +145,12 @@ async def start_login(
         raise InvalidPhoneError("Слишком короткий номер")
     if len(phone) > 16:  # '+' + до 15 цифр (E.164)
         raise InvalidPhoneError("Слишком длинный номер")
+    # Новый вход = новый постоянный профиль устройства (§21.2): с ним создаётся сессия,
+    # он же сохраняется в accounts.device и дальше не меняется.
+    device = make_device(phone, effective_api_credentials(api_id, api_hash)[0])
     client = create_client(
-        phone=phone, proxy_url=proxy_url, api_id=api_id, api_hash=api_hash
+        phone=phone, proxy_url=proxy_url, api_id=api_id, api_hash=api_hash,
+        device=device,
     )
     try:
         await client.connect()
@@ -166,6 +176,7 @@ async def start_login(
         stage=AuthStage.awaiting_code,
         phone_code_hash=sent.phone_code_hash,
         proxy_url=proxy_url,
+        device=device,
     )
 
 

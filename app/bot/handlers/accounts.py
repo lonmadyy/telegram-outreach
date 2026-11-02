@@ -368,6 +368,7 @@ async def _save_account(message: Message, state: FSMContext, sess) -> None:
                 proxy_url=proxy_url,
                 api_id=api_id,
                 api_hash=api_hash,
+                device=sess.device,
             )
             await logs_repo.log_event(
                 session,
@@ -394,6 +395,7 @@ async def _save_account(message: Message, state: FSMContext, sess) -> None:
                 api_id=api_id,
                 api_hash=api_hash,
                 warmup_hours=warmup_hours,
+                device=sess.device,
             )
             await logs_repo.log_event(
                 session,
@@ -610,7 +612,7 @@ async def on_remove_confirm(query: CallbackQuery) -> None:
     phone = acc.phone
     proxy_url = acc.proxy_url
     result = await _remove_account_fully(
-        account_id, phone, proxy_url, acc.api_id, acc.api_hash
+        account_id, phone, proxy_url, acc.api_id, acc.api_hash, acc.device
     )
 
     if query.message is not None:
@@ -627,6 +629,7 @@ async def _remove_account_fully(
     proxy_url: str | None,
     api_id: int | None = None,
     api_hash: str | None = None,
+    device: dict | None = None,
 ) -> str:
     """Оркестрация мягкого удаления (§10.2): стоп воркера → снятие spamcheck →
     log_out + удаление .session → статус disabled. Каждый внешний шаг best-effort:
@@ -653,7 +656,8 @@ async def _remove_account_fully(
     logged_out = False
     try:
         client = create_client(
-            phone=phone, proxy_url=proxy_url, api_id=api_id, api_hash=api_hash
+            phone=phone, proxy_url=proxy_url, api_id=api_id, api_hash=api_hash,
+            device=device,
         )
         try:
             await client.connect()

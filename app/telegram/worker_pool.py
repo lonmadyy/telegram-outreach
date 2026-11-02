@@ -40,6 +40,7 @@ class WorkerPool:
                 proxy_url=account.proxy_url,
                 api_id=account.api_id,
                 api_hash=account.api_hash,
+                device=account.device,
             )
             try:
                 await client.connect()

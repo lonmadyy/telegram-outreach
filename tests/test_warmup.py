@@ -55,3 +55,48 @@ def test_warmup_total_hours_param(hours, total, in_warmup):
     warmup_duration_hours через settings_cache, §4.9)."""
     plan = warmup_actions_for_age(hours, total_hours=total)
     assert plan.in_warmup is in_warmup
+
+
+def test_glance_and_presence_rates():
+    import random
+
+    from app.telegram import humanize as h
+
+    rng = random.Random(7)
+    hits = sum(h.should_glance(rng) for _ in range(3000))
+    assert 850 < hits < 1150                     # ~каждый третий инвайт
+    delays = [h.next_presence_delay(rng) for _ in range(200)]
+    assert min(delays) >= 1200 and max(delays) <= 2400
+
+
+async def test_glance_chat_reads_and_never_raises():
+    from types import SimpleNamespace
+
+    from app.telegram import humanize as h
+
+    class Client:
+        read = None
+
+        async def get_messages(self, peer, limit):
+            return [SimpleNamespace(id=42), SimpleNamespace(id=41)]
+
+        async def send_read_acknowledge(self, peer, max_id):
+            Client.read = max_id
+
+    class Broken:
+        async def get_messages(self, peer, limit):
+            raise RuntimeError("boom")
+
+    import asyncio as _a
+    orig = _a.sleep
+
+    async def fast(_):
+        return None
+
+    h.asyncio.sleep = fast
+    try:
+        await h.glance_chat(Client(), "peer")
+        await h.glance_chat(Broken(), "peer")   # ошибка не наружу
+    finally:
+        h.asyncio.sleep = orig
+    assert Client.read == 42

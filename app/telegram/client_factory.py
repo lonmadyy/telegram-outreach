@@ -249,11 +249,20 @@ def create_client(
     app_version: str = "1.0.0",
     lang_code: str = "en",
     system_lang_code: str = "en",
+    device: dict | None = None,
 ) -> TelegramClient:
     """Создаёт (но не подключает) Telethon-клиент. Подключение и авторизация — отдельно.
 
     `api_id`/`api_hash` — per-account ключ (§11.1); если None — берётся глобальный из .env.
+    `device` — постоянный профиль аккаунта (accounts.device, §21.2); None → общие
+    параметры по умолчанию (аккаунты, добавленные до v1.5).
     """
+    if device:
+        device_model = device.get("device_model") or device_model
+        system_version = device.get("system_version") or system_version
+        app_version = device.get("app_version") or app_version
+        lang_code = device.get("lang_code") or lang_code
+        system_lang_code = device.get("system_lang_code") or system_lang_code
     cfg = parse_proxy(proxy_url)
     proxy_kwargs: dict = {}
     if cfg is not None:
@@ -261,7 +270,7 @@ def create_client(
         if cfg.connection is not None:
             proxy_kwargs["connection"] = cfg.connection
     eff_api_id, eff_api_hash = effective_api_credentials(api_id, api_hash)
-    return TelegramClient(
+    client = TelegramClient(
         session=session_path_for(phone),
         api_id=eff_api_id,
         api_hash=eff_api_hash,
@@ -274,3 +283,9 @@ def create_client(
         connection_retries=3,
         retry_delay=2,
     )
+    lang_pack = (device or {}).get("lang_pack")
+    init_request = getattr(client, "_init_request", None)
+    if lang_pack and init_request is not None:
+        # Telethon шлёт lang_pack='' всегда; Telegram Desktop (ключ 2040) — 'tdesktop'.
+        init_request.lang_pack = lang_pack
+    return client

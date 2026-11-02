@@ -90,6 +90,12 @@ class TaskOutcome:
     error: str | None = None
 
 
+def flood_request_name(exc: FloodWaitError) -> str:
+    """Имя запроса, вызвавшего FloodWait (для журнала, §21.5): 'ResolveUsernameRequest' и т.п."""
+    request = getattr(exc, "request", None)
+    return type(request).__name__ if request is not None else "unknown"
+
+
 def classify_error(exc: Exception) -> tuple[ResultCode, str] | None:
     for cls, mapping in ERROR_MAP.items():
         if isinstance(exc, cls):

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import random
+import time
 from datetime import datetime, timedelta, timezone
 
 from loguru import logger
@@ -47,12 +48,18 @@ from app.telegram.errors import (
     RetryableError,
     TaskOutcome,
     classify_error,
+    flood_request_name,
 )
 from app.telegram.humanize import (
+    glance_chat,
+    mark_online,
+    next_presence_delay,
     pre_action_pause,
+    should_glance,
     simulate_typing,
 )
-from app.telegram.peer_cache import peer_cache
+from app.telegram.peer_cache import CachedPeer, peer_cache
+from app.telegram.source_peers import source_peers
 from app.utils.time import (
     is_in_quiet_hours,
     next_quiet_end_at,
@@ -136,6 +143,8 @@ class WorkerAccount:
         self._ineligible_campaigns: set[int] = set()
         # Аккаунт занят парсингом групп (§20.2): живёт, но новых задач не берёт.
         self.on_hold = False
+        # Когда следующий раз отметиться «в сети» (§21.3), time.monotonic().
+        self._next_presence_at = 0.0
 
     # ------------------ Lifecycle ------------------
 
@@ -425,6 +434,11 @@ class WorkerAccount:
             await self._sleep(IDLE_POLL_SECONDS)
             return
 
+        # 4c. «В сети» раз в 20–40 минут, пока аккаунт реально работает (§21.3).
+        if time.monotonic() >= self._next_presence_at:
+            await mark_online(self.client)
+            self._next_presence_at = time.monotonic() + next_presence_delay()
+
         # 5. Захват задачи (SKIP LOCKED). Исключаем кампании, для которых этот
         # аккаунт признан непригодным (invite без прав/членства, §5.3), и
         # ограничиваем типами, доступными по дневному лимиту (§5.1).
@@ -504,6 +518,7 @@ class WorkerAccount:
             username=username,
             account=account,
             template=template,
+            campaign=campaign,
         )
 
     async def _execute_message(
@@ -514,10 +529,18 @@ class WorkerAccount:
         username: str,
         account: Account,
         template,
+        campaign=None,
     ) -> None:
         """DM-путь §5.2 «Перед отправкой DM»."""
-        # 1. Резолв peer.
-        peer = await peer_cache.get_or_resolve(self.client, username, self.account_id)
+        # 1. Резолв peer (§5.4, §21.1). FloodWait на резолве — как на отправке (§6.3).
+        try:
+            peer = await self._resolve_recipient(username, campaign)
+        except FloodWaitError as e:
+            await self._handle_flood_wait(
+                task_id=task_id, campaign_id=campaign_id, seconds=e.seconds,
+                request=flood_request_name(e), username=username,
+            )
+            return
         if peer is None:
             await self._record_skip(
                 task_id=task_id,
@@ -552,7 +575,7 @@ class WorkerAccount:
         except FloodWaitError as e:
             await self._handle_flood_wait(
                 task_id=task_id, campaign_id=campaign_id, seconds=e.seconds,
-                username=username,
+                request=flood_request_name(e), username=username,
             )
             return
         except PeerFloodError:
@@ -683,7 +706,7 @@ class WorkerAccount:
         except FloodWaitError as e:
             await self._handle_flood_wait(
                 task_id=task_id, campaign_id=campaign_id,
-                seconds=e.seconds, username=username,
+                seconds=e.seconds, request=flood_request_name(e), username=username,
             )
             return
 
@@ -697,8 +720,15 @@ class WorkerAccount:
             invite_mod.participants_cache.merge_members(chat_id, invited_ids)
             invite_mod.participants_cache.mark_db_loaded(chat_id)
 
-        # 3. Резолв получателя.
-        peer = await peer_cache.get_or_resolve(self.client, username, self.account_id)
+        # 3. Резолв получателя (§21.1). FloodWait на резолве — пауза аккаунта (§6.3).
+        try:
+            peer = await self._resolve_recipient(username, campaign)
+        except FloodWaitError as e:
+            await self._handle_flood_wait(
+                task_id=task_id, campaign_id=campaign_id, seconds=e.seconds,
+                request=flood_request_name(e), username=username,
+            )
+            return
         if peer is None:
             await self._record_skip(
                 task_id=task_id,
@@ -720,7 +750,10 @@ class WorkerAccount:
             )
             return
 
-        # 5. Пауза перед действием. Для invite typing НЕ имитируем (§5.2).
+        # 5. Пауза перед действием. Для invite typing НЕ имитируем (§5.2). Перед
+        # ~каждым третьим инвайтом «открываем» целевой чат, как живой админ (§21.3).
+        if should_glance():
+            await glance_chat(self.client, target_input)
         await pre_action_pause()
 
         # 6. Инвайт.
@@ -734,7 +767,7 @@ class WorkerAccount:
         except FloodWaitError as e:
             await self._handle_flood_wait(
                 task_id=task_id, campaign_id=campaign_id,
-                seconds=e.seconds, username=username,
+                seconds=e.seconds, request=flood_request_name(e), username=username,
             )
             return
         except PeerFloodError:
@@ -871,6 +904,21 @@ class WorkerAccount:
 
     # ------------------ Failure paths ------------------
 
+    async def _resolve_recipient(self, username: str, campaign) -> CachedPeer | None:
+        """Получатель задачи: сначала из списка участников исходной группы парсинга
+        (§21.1), иначе ResolveUsername. FloodWaitError пробрасывается вызывающему."""
+        job_id = getattr(campaign, "source_parse_job_id", None)
+        if job_id is not None:
+            try:
+                await source_peers.prime(
+                    self.client, account_id=self.account_id, job_id=job_id, username=username
+                )
+            except FloodWaitError:
+                raise
+            except Exception:
+                logger.exception("worker[{}] source_peers.prime failed", self.account_id)
+        return await peer_cache.get_or_resolve(self.client, username, self.account_id)
+
     async def _handle_flood_wait(
         self,
         *,
@@ -878,8 +926,9 @@ class WorkerAccount:
         campaign_id: int,
         seconds: int,
         username: str,
+        request: str = "unknown",
     ) -> None:
-        """ARCHITECTURE.md §6.3."""
+        """ARCHITECTURE.md §6.3. request — каким запросом вызван (§21.5)."""
         unlock_at = datetime.now(timezone.utc) + timedelta(seconds=seconds)
         async with session_scope() as session:
             await tasks_repo.requeue_with_delay(
@@ -898,8 +947,11 @@ class WorkerAccount:
                 account_id=self.account_id,
                 campaign_id=campaign_id,
                 task_id=task_id,
-                message=f"FloodWait {seconds}s, аккаунт на паузе до {unlock_at:%Y-%m-%d %H:%M UTC}",
-                payload={"seconds": seconds, "username": username},
+                message=(
+                    f"FloodWait {seconds}s ({request}), аккаунт на паузе до "
+                    f"{unlock_at:%Y-%m-%d %H:%M UTC}"
+                ),
+                payload={"seconds": seconds, "username": username, "request": request},
             )
 
     async def _handle_peer_flood(

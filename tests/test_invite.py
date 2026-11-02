@@ -150,3 +150,49 @@ def test_reset_campaign():
     assert inv.ineligible_count(9) == 1
     inv.reset_campaign(9)
     assert inv.ineligible_count(9) == 0
+
+
+async def test_ensure_loaded_prefers_fresh_db_snapshot(monkeypatch):
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+
+    from app.telegram import invite as inv
+
+    @asynccontextmanager
+    async def scope():
+        yield None
+
+    saved = {}
+    snapshot = {"value": {1, 2, 3}}
+
+    async def get_fresh(session, *, chat_id):
+        return snapshot["value"]
+
+    async def save(session, *, chat_id, user_ids):
+        saved[chat_id] = set(user_ids)
+
+    async def no_sleep(_):
+        return None
+
+    class Client:
+        calls = 0
+
+        async def iter_participants(self, target, limit=None):
+            Client.calls += 1
+            for uid in range(10, 10 + 450):
+                yield SimpleNamespace(id=uid)
+
+    monkeypatch.setattr(inv, "session_scope", scope)
+    monkeypatch.setattr(inv.chat_members_repo, "get_fresh_snapshot", get_fresh)
+    monkeypatch.setattr(inv.chat_members_repo, "save_snapshot", save)
+    monkeypatch.setattr(inv.asyncio, "sleep", no_sleep)
+
+    cache = inv.ParticipantsCache()
+    await cache.ensure_loaded(Client(), chat_id=-100, target_input=None)
+    assert Client.calls == 0 and cache.is_member(-100, 2)   # снимок из БД, без Telegram
+
+    snapshot["value"] = None                                 # снимок устарел/нет
+    cache2 = inv.ParticipantsCache()
+    await cache2.ensure_loaded(Client(), chat_id=-200, target_input=None)
+    assert Client.calls == 1 and cache2.is_member(-200, 459)
+    assert saved[-200] == set(range(10, 460))                # сохранили для следующего рестарта

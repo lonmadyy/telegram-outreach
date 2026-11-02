@@ -53,6 +53,7 @@ async def create_account(
     api_id: int | None = None,
     api_hash: str | None = None,
     warmup_hours: int = 48,
+    device: dict | None = None,
 ) -> Account:
     """Создаёт новый аккаунт в статусе warmup. §5.1, §4.1.
 
@@ -67,6 +68,7 @@ async def create_account(
         proxy_url=proxy_url,
         api_id=api_id,
         api_hash=api_hash,
+        device=device,
         status=AccountStatus.warmup,
         warmup_until=warmup_until,
     )
@@ -86,6 +88,7 @@ async def reactivate_account(
     proxy_url: str | None = None,
     api_id: int | None = None,
     api_hash: str | None = None,
+    device: dict | None = None,
 ) -> Account:
     """Повторная активация ранее отключённого (disabled) аккаунта (§10.3).
 
@@ -109,6 +112,8 @@ async def reactivate_account(
     account.proxy_url = proxy_url
     account.api_id = api_id
     account.api_hash = api_hash
+    if device is not None:
+        account.device = device  # новая сессия — новый профиль (§21.2)
     await session.flush()
     return account
 

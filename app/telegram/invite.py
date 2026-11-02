@@ -20,6 +20,7 @@
 from __future__ import annotations
 
 import asyncio
+import random
 from dataclasses import dataclass
 
 from loguru import logger
@@ -35,9 +36,15 @@ from telethon.tl.functions.channels import InviteToChannelRequest
 from telethon.tl.types import Channel
 
 from app.db.models import ResultCode
+from app.db.repositories import chat_members as chat_members_repo
+from app.db.session import session_scope
 
 # Сколько участников максимум тянем в кэш членства при префетче.
 DEFAULT_PARTICIPANTS_CAP = 50_000
+# Пауза на каждые 200 участников (одна порция GetParticipants), §21.4: без залпа
+# из сотен запросов подряд на приглашающем аккаунте.
+PREFETCH_CHUNK = 200
+PREFETCH_PAUSE_SEC = (0.5, 1.5)
 
 
 # ---------------------------------------------------------------------------
@@ -172,8 +179,10 @@ class ParticipantsCache:
     ) -> None:
         """Идемпотентный префетч участников чата в set[user_id].
 
-        При FloodWait уже полученные id остаются в кэше, но chat_id НЕ помечается
-        загруженным — повторим в следующий раз.
+        Сначала — снимок из БД, если ему меньше суток (§21.4): после рестарта не
+        выкачиваем чат заново. Иначе — из Telegram с паузами между порциями и
+        сохранением снимка. При FloodWait уже полученные id остаются в кэше, но
+        chat_id НЕ помечается загруженным — повторим в следующий раз.
         """
         if chat_id in self._loaded:
             return
@@ -183,10 +192,30 @@ class ParticipantsCache:
                 return
             members = self._members.setdefault(chat_id, set())
             try:
+                async with session_scope() as session:
+                    snapshot = await chat_members_repo.get_fresh_snapshot(
+                        session, chat_id=chat_id
+                    )
+            except Exception:
+                logger.exception("participants snapshot read failed for chat_id={}", chat_id)
+                snapshot = None
+            if snapshot is not None:
+                members.update(snapshot)
+                self._loaded.add(chat_id)
+                logger.info(
+                    "participants cache from DB snapshot: chat_id={} members={}",
+                    chat_id, len(snapshot),
+                )
+                return
+            fetched: set[int] = set()
+            try:
                 async for user in client.iter_participants(target_input, limit=cap):
                     uid = getattr(user, "id", None)
                     if uid is not None:
+                        fetched.add(uid)
                         members.add(uid)
+                        if len(fetched) % PREFETCH_CHUNK == 0:
+                            await asyncio.sleep(random.uniform(*PREFETCH_PAUSE_SEC))
             except FloodWaitError as e:
                 logger.warning(
                     "participants prefetch FloodWait {}s for chat_id={} "
@@ -200,6 +229,13 @@ class ParticipantsCache:
                 )
                 return
             self._loaded.add(chat_id)
+            try:
+                async with session_scope() as session:
+                    await chat_members_repo.save_snapshot(
+                        session, chat_id=chat_id, user_ids=fetched
+                    )
+            except Exception:
+                logger.exception("participants snapshot save failed for chat_id={}", chat_id)
             logger.info(
                 "participants cache loaded: chat_id={} members={}",
                 chat_id, len(members),

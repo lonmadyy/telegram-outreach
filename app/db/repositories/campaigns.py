@@ -45,6 +45,7 @@ async def create_campaign(
     target_chat_id: int | None = None,
     resend_old: bool = False,
     notes: str | None = None,
+    source_parse_job_id: int | None = None,
 ) -> Campaign:
     campaign = Campaign(
         type=type_,
@@ -55,6 +56,7 @@ async def create_campaign(
         notes=notes,
         created_by_user_id=created_by_user_id,
         status=CampaignStatus.pending,
+        source_parse_job_id=source_parse_job_id,
     )
     session.add(campaign)
     await session.flush()

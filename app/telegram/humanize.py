@@ -14,7 +14,9 @@ from __future__ import annotations
 import asyncio
 import random
 
+from loguru import logger
 from telethon import TelegramClient
+from telethon.tl.functions.account import UpdateStatusRequest
 
 
 PRE_ACTION_MIN = 1.5
@@ -25,6 +27,12 @@ TYPING_MAX = 7.0
 
 JITTER_LOW = 0.85
 JITTER_HIGH = 1.15
+
+# §21.3: перед ~каждым третьим инвайтом «открыть» целевой чат, как живой админ.
+GLANCE_PROBABILITY = 1 / 3
+GLANCE_MESSAGES = (5, 15)
+# §21.3: «в сети» раз в 20–40 минут, пока аккаунт работает.
+PRESENCE_EVERY_SEC = (1200, 2400)
 
 
 async def pre_action_pause() -> None:
@@ -53,3 +61,31 @@ def inter_task_delay_seconds(min_sec: int, max_sec: int) -> float:
 async def sleep_inter_task(min_sec: int, max_sec: int) -> None:
     delay = inter_task_delay_seconds(min_sec, max_sec)
     await asyncio.sleep(delay)
+
+
+def should_glance(rng: random.Random | None = None) -> bool:
+    return (rng or random).random() < GLANCE_PROBABILITY
+
+
+def next_presence_delay(rng: random.Random | None = None) -> float:
+    return (rng or random).uniform(*PRESENCE_EVERY_SEC)
+
+
+async def glance_chat(client: TelegramClient, peer) -> None:
+    """Прочитать последние 5–15 сообщений чата и отметить их прочитанными (§21.3).
+    Best-effort: любая ошибка (в т.ч. FloodWait) не мешает основному действию."""
+    try:
+        messages = await client.get_messages(peer, limit=random.randint(*GLANCE_MESSAGES))
+        if messages:
+            await asyncio.sleep(random.uniform(1.0, 3.0))
+            await client.send_read_acknowledge(peer, max_id=messages[0].id)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("glance_chat failed: {}", type(e).__name__)
+
+
+async def mark_online(client: TelegramClient) -> None:
+    """Отметиться «в сети» (§21.3). Best-effort."""
+    try:
+        await client(UpdateStatusRequest(offline=False))
+    except Exception as e:  # noqa: BLE001
+        logger.debug("mark_online failed: {}", type(e).__name__)

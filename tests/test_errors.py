@@ -85,3 +85,12 @@ def test_input_user_deactivated_is_skip():
     assert not isinstance(
         InputUserDeactivatedError(request=None), err.SESSION_DEAD_ERRORS
     )
+
+
+def test_flood_request_name():
+    from telethon.errors import FloodWaitError
+    from telethon.tl.functions.contacts import ResolveUsernameRequest
+
+    e = FloodWaitError(request=ResolveUsernameRequest(username="x"), capture=60)
+    assert err.flood_request_name(e) == "ResolveUsernameRequest"
+    assert err.flood_request_name(FloodWaitError(request=None, capture=60)) == "unknown"

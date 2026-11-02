@@ -370,6 +370,9 @@ async def on_campaign_start(query: CallbackQuery, state: FSMContext) -> None:
     usernames = data.get("usernames") or []
     ctype_val = data.get("campaign_type")
     resend_old = bool(data.get("resend_old"))
+    # Кампания из итога /parse: получатели ищутся в исходных группах (§21.1).
+    source_job = data.get("prefill_parse_job")
+    source_job = int(source_job) if source_job is not None else None
 
     if not usernames or ctype_val is None:
         await query.answer("Сессия пустая, начните заново", show_alert=True)
@@ -401,6 +404,7 @@ async def on_campaign_start(query: CallbackQuery, state: FSMContext) -> None:
                 target_chat_id=target_chat_id,
                 resend_old=resend_old,
                 created_by_user_id=query.from_user.id,
+                source_parse_job_id=source_job,
             )
         else:
             campaign = await campaigns_repo.create_campaign(
@@ -409,6 +413,7 @@ async def on_campaign_start(query: CallbackQuery, state: FSMContext) -> None:
                 template_id=template_id,
                 resend_old=resend_old,
                 created_by_user_id=query.from_user.id,
+                source_parse_job_id=source_job,
             )
         campaign_id = campaign.id
 
