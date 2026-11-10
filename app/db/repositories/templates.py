@@ -10,13 +10,22 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.models import Template
 
 
-async def list_templates(session: AsyncSession) -> list[Template]:
-    result = await session.execute(select(Template).order_by(Template.id))
+async def list_templates(session: AsyncSession, *, kind: str = "dm") -> list[Template]:
+    """Шаблоны одного вида: 'dm' — для лички (§8), 'group' — для групп (§22.2)."""
+    result = await session.execute(
+        select(Template).where(Template.kind == kind).order_by(Template.id)
+    )
     return list(result.scalars().all())
 
 
 async def get_by_id(session: AsyncSession, template_id: int) -> Template | None:
     return await session.get(Template, template_id)
+
+
+async def all_names(session: AsyncSession) -> set[str]:
+    """Имена всех шаблонов (уникальны на всю таблицу, обоих видов)."""
+    result = await session.execute(select(Template.name))
+    return {r[0] for r in result.all()}
 
 
 async def get_by_name(session: AsyncSession, name: str) -> Template | None:
@@ -30,8 +39,9 @@ async def create_template(
     name: str,
     body: str,
     variables: list[str],
+    kind: str = "dm",
 ) -> Template:
-    template = Template(name=name, body=body, variables=variables)
+    template = Template(name=name, body=body, variables=variables, kind=kind)
     session.add(template)
     await session.flush()
     return template

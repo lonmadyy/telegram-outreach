@@ -163,6 +163,21 @@ class Account(Base):
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Роли (§22.1): личка (кампании в ЛС и инвайты) и группы (автопостинг §22).
+    role_dm: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("TRUE")
+    )
+    role_groups: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("FALSE")
+    )
+    # Счётчики групповой линии за сутки (§22.5), сброс в 00:00 UTC.
+    daily_group_posts: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("0")
+    )
+    daily_group_joins: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("0")
+    )
+    last_group_join_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     __table_args__ = (
         CheckConstraint(r"phone ~ '^\+?[0-9]{7,15}$'", name="phone_format"),
@@ -242,6 +257,8 @@ class Template(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
+    # 'dm' — для кампаний в личку (§8), 'group' — для рассылки по группам (§22.2).
+    kind: Mapped[str] = mapped_column(String(8), nullable=False, server_default="dm")
 
 
 class Campaign(Base):
@@ -474,3 +491,124 @@ class ChatMember(Base):
 
     chat_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     user_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+
+
+# ---------------------------------------------------------------------------
+# Рассылка по группам. ARCHITECTURE.md §22.8.
+# ---------------------------------------------------------------------------
+
+
+class GroupCampaign(Base):
+    """Групповая рассылка (автопостинг). status: running | paused | stopped."""
+
+    __tablename__ = "group_campaigns"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(128), nullable=False)
+    template_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("templates.id", ondelete="RESTRICT"), nullable=False
+    )
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default="running"
+    )
+    # even | all | manual (§22.4)
+    distribution: Mapped[str] = mapped_column(
+        String(8), nullable=False, server_default="even"
+    )
+    period_min: Mapped[int] = mapped_column(Integer, nullable=False)  # минуты
+    period_max: Mapped[int] = mapped_column(Integer, nullable=False)
+    gap_min_sec: Mapped[int] = mapped_column(Integer, nullable=False)
+    gap_max_sec: Mapped[int] = mapped_column(Integer, nullable=False)
+    window_start: Mapped[str | None] = mapped_column(String(5))  # 'HH:MM'
+    window_end: Mapped[str | None] = mapped_column(String(5))
+    created_by_user_id: Mapped[int | None] = mapped_column(BigInteger)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    stopped_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class GroupCampaignAccount(Base):
+    """Аккаунты, участвующие в групповой рассылке."""
+
+    __tablename__ = "group_campaign_accounts"
+
+    campaign_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("group_campaigns.id", ondelete="CASCADE"), primary_key=True
+    )
+    account_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("accounts.id", ondelete="CASCADE"), primary_key=True
+    )
+
+
+class GroupTarget(Base):
+    """Пара «группа × аккаунт» в рассылке.
+
+    state: new → (pending) → active → manual | excluded (§22.6).
+    next_at — следующий пост (active) или перепроверка заявки (pending).
+    """
+
+    __tablename__ = "group_targets"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    campaign_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("group_campaigns.id", ondelete="CASCADE"), nullable=False
+    )
+    account_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("accounts.id", ondelete="SET NULL")
+    )
+    ref_kind: Mapped[str] = mapped_column(String(8), nullable=False)  # username|invite|id
+    ref_value: Mapped[str] = mapped_column(String(128), nullable=False)
+    ref_key: Mapped[str] = mapped_column(String(140), nullable=False)
+    period_min: Mapped[int | None] = mapped_column(Integer)  # свой период строки, мин
+    period_max: Mapped[int | None] = mapped_column(Integer)
+    state: Mapped[str] = mapped_column(String(16), nullable=False, server_default="new")
+    state_reason: Mapped[str | None] = mapped_column(Text)
+    title: Mapped[str | None] = mapped_column(String(255))
+    chat_id: Mapped[int | None] = mapped_column(BigInteger)
+    access_hash: Mapped[int | None] = mapped_column(BigInteger)
+    peer_type: Mapped[str | None] = mapped_column(String(8))  # channel | chat
+    slowmode_sec: Mapped[int | None] = mapped_column(Integer)
+    joined_by_us: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("FALSE")
+    )
+    joined_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    next_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_post_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    posts_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    fail_streak: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        Index("idx_group_targets_account_state_next", "account_id", "state", "next_at"),
+        Index("idx_group_targets_campaign", "campaign_id"),
+    )
+
+
+class GroupPost(Base):
+    """Журнал постов групповой рассылки (статистика, CSV)."""
+
+    __tablename__ = "group_posts"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    campaign_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("group_campaigns.id", ondelete="CASCADE"), nullable=False
+    )
+    target_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("group_targets.id", ondelete="CASCADE"), nullable=False
+    )
+    account_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("accounts.id", ondelete="SET NULL")
+    )
+    posted_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    message_id: Mapped[int | None] = mapped_column(BigInteger)
+
+    __table_args__ = (Index("idx_group_posts_campaign_time", "campaign_id", "posted_at"),)

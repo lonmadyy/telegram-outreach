@@ -431,6 +431,8 @@ async def reset_daily_counters(session: AsyncSession) -> int:
         update(Account).values(
             daily_sent=0,
             daily_invited=0,
+            daily_group_posts=0,  # §22.5
+            daily_group_joins=0,
             last_reset_at=datetime.now(timezone.utc),
         )
     )

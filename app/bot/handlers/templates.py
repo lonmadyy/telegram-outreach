@@ -229,6 +229,15 @@ async def cmd_del_template(message: Message) -> None:
         if template is None:
             await message.answer(f"Шаблон {key!r} не найден.", reply_markup=main_menu())
             return
+        if template.kind != "dm":
+            # Шаблоны для групп удаляются в своём разделе (§22.2) — там проверка,
+            # что шаблон не занят рассылкой.
+            await message.answer(
+                f"<b>{template.name}</b> — шаблон для групп. Удалить можно в "
+                "/group_templates.",
+                reply_markup=main_menu(),
+            )
+            return
         await templates_repo.delete_template(session, template.id)
         logger.info("Template deleted: id={}, name={}", template.id, template.name)
 
