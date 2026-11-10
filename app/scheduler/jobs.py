@@ -27,6 +27,8 @@ from app.db.repositories import campaigns as campaigns_repo
 from app.db.repositories import logs as logs_repo
 from app.db.repositories.settings import settings_cache
 from app.db.session import session_scope
+from app.groups import notify as group_notify
+from app.groups import service as group_service
 from app.notifications.admin import notify_admin
 from app.telegram import antiflood
 from app.telegram.spam_checker import (
@@ -84,6 +86,24 @@ class SchedulerService:
             self._antiflood_check_job,
             IntervalTrigger(minutes=1),
             id="antiflood_check",
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True,
+        )
+        # Рассылка по группам (§22.7): группы выбывших аккаунтов → живым; уведомления
+        # копятся и уходят одним сообщением раз в минуту.
+        self._scheduler.add_job(
+            self._group_maintenance_job,
+            IntervalTrigger(minutes=5),
+            id="group_maintenance",
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True,
+        )
+        self._scheduler.add_job(
+            group_notify.flush,
+            IntervalTrigger(minutes=1),
+            id="group_notify_flush",
             replace_existing=True,
             max_instances=1,
             coalesce=True,
@@ -186,6 +206,13 @@ class SchedulerService:
             await spam_check(account_id=account_id, client=client)  # type: ignore[arg-type]
         except Exception:
             logger.exception("spam_check job failed for account_id={}", account_id)
+
+    async def _group_maintenance_job(self) -> None:
+        """§22.7: группы выбывших аккаунтов передаются живым аккаунтам рассылки."""
+        try:
+            await group_service.maintenance()
+        except Exception:
+            logger.exception("group_maintenance job failed")
 
     async def _daily_limit_reset_job(self) -> None:
         """Cron 00:00 UTC: обнулить счётчики у всех аккаунтов. §5.1."""

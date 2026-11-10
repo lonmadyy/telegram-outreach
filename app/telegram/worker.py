@@ -37,6 +37,7 @@ from app.db.repositories import tasks as tasks_repo
 from app.db.repositories import templates as templates_repo
 from app.db.repositories.settings import settings_cache
 from app.db.session import session_scope
+from app.groups.engine import GroupLine
 from app.notifications.admin import notify_admin
 from app.telegram import antiflood
 from app.telegram import invite as invite_mod
@@ -129,6 +130,14 @@ def _quiet_settings() -> tuple[str, str, str]:
     )
 
 
+def _mixed_gap() -> float:
+    """Пауза между любыми двумя действиями аккаунта с групповой ролью (§22.5)."""
+    lo = settings_cache.get_int("group_mixed_gap_min_sec", 60)
+    hi = settings_cache.get_int("group_mixed_gap_max_sec", 120)
+    lo, hi = sorted((max(0, lo), max(0, hi)))
+    return random.uniform(lo, hi)
+
+
 class WorkerAccount:
     """Цикл воркера для одного аккаунта. §6.1."""
 
@@ -145,6 +154,12 @@ class WorkerAccount:
         self.on_hold = False
         # Когда следующий раз отметиться «в сети» (§21.3), time.monotonic().
         self._next_presence_at = 0.0
+        # Групповая линия (§22.5) и таймеры линий для аккаунта с ролью «группы»
+        # (time.monotonic()). Аккаунт без этой роли их не использует.
+        self._group = GroupLine(account_id, client)
+        self._next_dm_at = 0.0
+        self._next_group_at = 0.0
+        self._next_any_at = 0.0
 
     # ------------------ Lifecycle ------------------
 
@@ -408,12 +423,21 @@ class WorkerAccount:
 
         in_warmup = accounts_repo.is_in_warmup(account)
 
-        if not can_dm and not can_invite:
+        # Роли (§22.1): без роли «личка» задачи кампаний не берём; групповая линия —
+        # при роли «группы» и не на прогреве (§22.5).
+        if not account.role_dm:
+            can_dm = can_invite = False
+        group_line = bool(account.role_groups) and not in_warmup
+
+        if not can_dm and not can_invite and not group_line:
             if in_warmup:
                 # Нулевой период лимитов (<12ч): не спим до полуночи — «греем»
                 # аккаунт (онлайн + чтение канала) и проверяемся снова скоро.
                 await warmup_mod.simulate_presence(self.client)
                 await self._sleep(WARMUP_IDLE_SECONDS)
+            elif not account.role_dm:
+                # Ролей нет — ждём, пока их включат (/roles), без сна до полуночи.
+                await self._sleep(IDLE_POLL_SECONDS)
             else:
                 # Спим до полуночи UTC (счётчики сбросит daily_limit_reset_job).
                 await self._sleep(min(seconds_until_midnight_utc(), 6 * 3600))
@@ -438,6 +462,11 @@ class WorkerAccount:
         if time.monotonic() >= self._next_presence_at:
             await mark_online(self.client)
             self._next_presence_at = time.monotonic() + next_presence_delay()
+
+        # 4d. Роль «группы» (§22.5): шаги 5–7 заменяет выбор линии по таймерам.
+        if group_line:
+            await self._tick_mixed(account, allowed_types)
+            return
 
         # 5. Захват задачи (SKIP LOCKED). Исключаем кампании, для которых этот
         # аккаунт признан непригодным (invite без прав/членства, §5.3), и
@@ -466,6 +495,66 @@ class WorkerAccount:
         base = random.uniform(min_sec, max_sec)
         delay = base * random.uniform(0.85, 1.15)
         await self._sleep(delay)
+
+    async def _tick_mixed(self, account: Account, allowed_types: list[str]) -> None:
+        """Аккаунт с ролью «группы» (§22.5): за тик — одно действие одной из линий.
+
+        Личка — интервал §5.2, группы — пауза рассылки, между любыми двумя
+        действиями — `_mixed_gap()`. Делать нечего — сон до ближайшего таймера
+        (не дольше IDLE_POLL_SECONDS), чтобы не держать линию заблокированной."""
+        now = time.monotonic()
+        if allowed_types and now >= self._next_dm_at and now >= self._next_any_at:
+            async with session_scope() as session:
+                claimed = await tasks_repo.claim_next_task(
+                    session,
+                    account_id=self.account_id,
+                    exclude_campaign_ids=list(self._ineligible_campaigns),
+                    allowed_types=allowed_types,
+                )
+            if claimed is not None:
+                await self._execute_claimed(
+                    task_id=claimed["id"],
+                    campaign_id=claimed["campaign_id"],
+                    username=claimed["username"],
+                    account=account,
+                )
+                min_sec, max_sec = _interval_bounds()
+                delay = random.uniform(min_sec, max_sec) * random.uniform(0.85, 1.15)
+                self._next_dm_at = time.monotonic() + delay
+                self._next_any_at = time.monotonic() + _mixed_gap()
+                return
+            self._next_dm_at = time.monotonic() + IDLE_POLL_SECONDS
+
+        now = time.monotonic()
+        if now >= self._next_group_at and now >= self._next_any_at:
+            # Заранее сдвигаем таймер: исключение из шага не даст крутить линию вхолостую.
+            self._next_group_at = now + IDLE_POLL_SECONDS
+            try:
+                gap = await self._group.step(account)
+            except FloodWaitError as e:
+                await self._handle_flood_wait(
+                    task_id=None, campaign_id=None, seconds=e.seconds,
+                    request=flood_request_name(e), username="(группы)",
+                )
+                return
+            except PeerFloodError:
+                await self._handle_peer_flood(
+                    task_id=None, campaign_id=None, phone=account.phone, username="(группы)",
+                )
+                return
+            except SESSION_DEAD_ERRORS as exc:
+                await self._mark_session_dead(str(exc))
+                return
+            if gap is not None:
+                self._next_group_at = time.monotonic() + gap
+                self._next_any_at = time.monotonic() + _mixed_gap()
+                return
+
+        timers = [self._next_group_at]
+        if allowed_types:
+            timers.append(self._next_dm_at)
+        wake = max(min(timers), self._next_any_at)
+        await self._sleep(min(max(1.0, wake - time.monotonic()), IDLE_POLL_SECONDS))
 
     async def _execute_claimed(
         self,
@@ -922,18 +1011,20 @@ class WorkerAccount:
     async def _handle_flood_wait(
         self,
         *,
-        task_id: int,
-        campaign_id: int,
+        task_id: int | None,
+        campaign_id: int | None,
         seconds: int,
         username: str,
         request: str = "unknown",
     ) -> None:
-        """ARCHITECTURE.md §6.3. request — каким запросом вызван (§21.5)."""
+        """ARCHITECTURE.md §6.3. request — каким запросом вызван (§21.5).
+        task_id=None — FloodWait групповой линии (§22.6): задачи нет, только пауза."""
         unlock_at = datetime.now(timezone.utc) + timedelta(seconds=seconds)
         async with session_scope() as session:
-            await tasks_repo.requeue_with_delay(
-                session, task_id=task_id, delay_seconds=seconds
-            )
+            if task_id is not None:
+                await tasks_repo.requeue_with_delay(
+                    session, task_id=task_id, delay_seconds=seconds
+                )
             await accounts_repo.set_pause(
                 session,
                 account_id=self.account_id,
@@ -957,18 +1048,19 @@ class WorkerAccount:
     async def _handle_peer_flood(
         self,
         *,
-        task_id: int,
-        campaign_id: int,
+        task_id: int | None,
+        campaign_id: int | None,
         phone: str,
         username: str,
     ) -> None:
-        """ARCHITECTURE.md §6.4."""
+        """ARCHITECTURE.md §6.4. task_id=None — PeerFlood групповой линии (§22.6)."""
         unlock_at = datetime.now(timezone.utc) + timedelta(hours=12)
         limit_reduce_until = datetime.now(timezone.utc) + timedelta(days=7)
         async with session_scope() as session:
-            await tasks_repo.requeue_with_delay(
-                session, task_id=task_id, delay_seconds=12 * 3600
-            )
+            if task_id is not None:
+                await tasks_repo.requeue_with_delay(
+                    session, task_id=task_id, delay_seconds=12 * 3600
+                )
             await accounts_repo.set_spam_blocked(
                 session,
                 account_id=self.account_id,

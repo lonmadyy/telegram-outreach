@@ -98,9 +98,17 @@ def format_progress(
 
 
 async def build_summary(session: AsyncSession) -> str | None:
-    """Сводка по running-кампаниям + статусам аккаунтов. None если активных нет."""
+    """Сводка по running-кампаниям + статусам аккаунтов + блок групповых рассылок
+    (§22.7). None — нет ни работающих кампаний, ни групповых рассылок."""
+    from app.db.repositories.settings import settings_cache
+    from app.groups import service as group_service
+
     campaigns = await campaigns_repo.list_running(session)
-    if not campaigns:
+    groups_text = await group_service.progress_text(
+        session,
+        interval_sec=settings_cache.get_int("progress_notify_interval_sec", 1800),
+    )
+    if not campaigns and not groups_text:
         return None
 
     now = datetime.now(timezone.utc)
@@ -125,4 +133,7 @@ async def build_summary(session: AsyncSession) -> str | None:
     for acc in result.scalars().all():
         counts[acc.status.value] = counts.get(acc.status.value, 0) + 1
 
-    return format_progress(cps, counts)
+    text = format_progress(cps, counts)
+    if groups_text:
+        text = f"{text}\n\n{groups_text}".strip()
+    return text
