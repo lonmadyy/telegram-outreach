@@ -10,6 +10,7 @@ from aiogram.types import CallbackQuery, Message
 from app.bot.keyboards import (
     BTN_ACCOUNTS,
     BTN_CAMPAIGNS,
+    BTN_GROUPS,
     BTN_MENU,
     BTN_STATUS,
     main_menu,
@@ -41,6 +42,10 @@ HELP_TEXT = (
     "🔎 <b>Сбор базы</b>\n"
     "/parse — парсинг групп: @username участников и писавших\n"
     "/parses — файлы прошлых парсингов\n\n"
+    "📣 <b>Рассылка по группам</b>\n"
+    "/groups — раздел: рассылки, шаблоны, роли\n"
+    "/new_group_campaign — новая рассылка по группам\n"
+    "/roles — роли аккаунтов: личка / группы\n\n"
     "📤 <b>Экспорт и настройки</b>\n"
     "/export_report &lt;id&gt; — CSV по кампании\n"
     "/export_log [today|yesterday|N] — логи\n"
@@ -140,3 +145,11 @@ async def rb_campaigns(message: Message, state: FSMContext) -> None:
     from app.bot.handlers.campaigns import list_campaigns
 
     await list_campaigns(message)
+
+
+@router.message(F.text == BTN_GROUPS)
+async def rb_groups(message: Message, state: FSMContext) -> None:
+    await _exit_scenario(message, state)
+    from app.bot.handlers.groups import groups_menu
+
+    await groups_menu(message, state)

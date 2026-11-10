@@ -78,6 +78,8 @@ def account_card(acc: Account, *, now: datetime | None = None) -> str:
     now = now or datetime.now(timezone.utc)
     head = f"{emoji} #{acc.id} · <b>{acc.phone}</b>"
     bits = [status, f"сегодня: {acc.daily_invited} инв · {acc.daily_sent} DM"]
+    if getattr(acc, "role_groups", False):  # §22.1
+        bits.append(f"в группы: {acc.daily_group_posts or 0} постов")
     if acc.limit_reduced_until is not None and acc.limit_reduced_until > now:
         bits.append("лимит 75%")
     return head + "\n    " + " · ".join(bits)

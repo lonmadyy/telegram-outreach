@@ -34,3 +34,30 @@ class ParseGroups(StatesGroup):
     waiting_account = State()
     waiting_options = State()
     waiting_msg_limit = State()
+
+
+# --- Рассылка по группам (§22.9) ---
+
+
+class NewGroupCampaign(StatesGroup):
+    waiting_name = State()
+    waiting_template = State()
+    waiting_groups = State()
+    waiting_accounts = State()
+    waiting_distribution = State()
+    waiting_intervals = State()
+    waiting_interval_value = State()
+    waiting_confirm = State()
+
+
+class EditGroupCampaign(StatesGroup):
+    waiting_intervals = State()
+    waiting_interval_value = State()
+    waiting_groups = State()
+    waiting_template_text = State()
+
+
+class NewGroupTemplate(StatesGroup):
+    waiting_name = State()
+    waiting_body = State()
+    waiting_confirm = State()

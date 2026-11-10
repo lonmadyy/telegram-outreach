@@ -15,6 +15,7 @@ BTN_MENU = "☰ Меню"
 BTN_STATUS = "📊 Статус"
 BTN_ACCOUNTS = "👤 Аккаунты"
 BTN_CAMPAIGNS = "📢 Кампании"
+BTN_GROUPS = "📣 Группы"
 
 
 def reply_menu_kb() -> ReplyKeyboardMarkup:
@@ -23,6 +24,7 @@ def reply_menu_kb() -> ReplyKeyboardMarkup:
         keyboard=[
             [KeyboardButton(text=BTN_MENU), KeyboardButton(text=BTN_STATUS)],
             [KeyboardButton(text=BTN_ACCOUNTS), KeyboardButton(text=BTN_CAMPAIGNS)],
+            [KeyboardButton(text=BTN_GROUPS)],
         ],
         resize_keyboard=True,
         is_persistent=True,
@@ -38,6 +40,7 @@ def main_menu() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="Новая кампания", callback_data="menu:new_campaign")],
             [InlineKeyboardButton(text="Кампании", callback_data="menu:campaigns")],
             [InlineKeyboardButton(text="🔎 Парсинг групп", callback_data="menu:parse")],
+            [InlineKeyboardButton(text="📢 Рассылка по группам", callback_data="menu:groups")],
             [InlineKeyboardButton(text="Статус", callback_data="menu:status")],
             [InlineKeyboardButton(text="Настройки", callback_data="menu:settings")],
         ]
